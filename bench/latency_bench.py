@@ -50,6 +50,11 @@ PROVIDERS = {
         "api_key": os.environ.get("GROQ_API_KEY"),
         "model": "whisper-large-v3-turbo",
     },
+    "groq_full": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key": os.environ.get("GROQ_API_KEY"),
+        "model": "whisper-large-v3",
+    },
     "openai": {
         "base_url": None,
         "api_key": os.environ.get("OPENAI_API_KEY"),
@@ -159,22 +164,30 @@ def print_summary(all_results):
         mean = statistics.mean(all_lat) * 1000
         print(f"  {prov:<8} n={len(all_lat):>3}  p50={p50:>6.0f}ms  p95={p95:>6.0f}ms  mean={mean:>6.0f}ms")
 
-    print("\n" + "=" * 88)
-    print("TRANSCRIPT DIVERGENCE (Groq vs OpenAI, first iteration)")
-    print("=" * 88)
-    diverges = 0
-    for file_name, res in all_results.items():
-        if "groq" in res and "openai" in res:
-            g = res["groq"]["first_transcript"]
-            o = res["openai"]["first_transcript"]
-            if g == o:
-                print(f"  ✓ {file_name}: identical")
-            else:
-                diverges += 1
-                print(f"  ✗ {file_name}: differ")
-                print(f"      groq  : {g[:140]}{'…' if len(g) > 140 else ''}")
-                print(f"      openai: {o[:140]}{'…' if len(o) > 140 else ''}")
-    print(f"\n  Total: {diverges} / {len(all_results)} files diverge")
+    pairs = [
+        ("groq", "groq_full", "turbo vs full (same provider)"),
+        ("groq", "openai", "turbo vs whisper-1"),
+        ("groq_full", "openai", "full vs whisper-1"),
+    ]
+    for a, b, label in pairs:
+        print("\n" + "=" * 88)
+        print(f"TRANSCRIPT DIVERGENCE — {label}, first iteration")
+        print("=" * 88)
+        diverges = 0
+        compared = 0
+        for file_name, res in all_results.items():
+            if a in res and b in res:
+                compared += 1
+                ta = res[a]["first_transcript"]
+                tb = res[b]["first_transcript"]
+                if ta == tb:
+                    print(f"  ✓ {file_name}: identical")
+                else:
+                    diverges += 1
+                    print(f"  ✗ {file_name}: differ")
+                    print(f"      {a:<10}: {ta[:140]}{'…' if len(ta) > 140 else ''}")
+                    print(f"      {b:<10}: {tb[:140]}{'…' if len(tb) > 140 else ''}")
+        print(f"\n  Total: {diverges} / {compared} files diverge")
 
 
 def main():

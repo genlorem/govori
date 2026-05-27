@@ -20,7 +20,6 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-import AppKit
 import av
 import httpx
 import numpy as np
@@ -193,6 +192,7 @@ def _try_transcribe(
     duration_sec: float,
     on_progress: Optional[Callable] = None,
     max_retries: int = 2,
+    model_override: Optional[str] = None,
 ):
     """One initial attempt + up to max_retries auto-retries against a single provider.
 
@@ -202,12 +202,13 @@ def _try_transcribe(
     total_attempts = max_retries + 1
     total_retry_secs = max_retries * int(timeout)
     retry_ticks_elapsed = 0
+    model = model_override or provider.model
     for attempt in range(1, total_attempts + 1):
         result = {"text": None, "done": False}
 
         def _do():
             try:
-                result["text"] = _encode_and_transcribe(client, provider.model, audio, timeout=timeout)
+                result["text"] = _encode_and_transcribe(client, model, audio, timeout=timeout)
             finally:
                 result["done"] = True
 
@@ -229,9 +230,13 @@ def _try_transcribe(
     return None
 
 
-def transcribe_with_fallback(audio, duration_sec, *, on_progress: Optional[Callable] = None):
+def transcribe_with_fallback(audio, duration_sec, *, on_progress: Optional[Callable] = None,
+                              model_override: Optional[str] = None):
     """Primary (Groq) with full retry budget. On transient terminal failure,
     try OpenAI once if OPENAI_API_KEY is set.
+
+    `model_override` substitutes the primary provider's model only (e.g. notes
+    use full `whisper-large-v3` instead of turbo). Fallback keeps its own model.
 
     Returns: text | None | PERMANENT_API_ERROR.
     """
@@ -243,7 +248,8 @@ def transcribe_with_fallback(audio, duration_sec, *, on_progress: Optional[Calla
 
     with span("provider_primary", provider=primary.name):
         text = _try_transcribe(primary, primary_client, audio, duration_sec,
-                               on_progress=on_progress, max_retries=2)
+                               on_progress=on_progress, max_retries=2,
+                               model_override=model_override)
 
     if text is PERMANENT_API_ERROR:
         logger.warning(f"Primary {primary.name}: permanent error — no fallback")
@@ -306,7 +312,12 @@ def _apply_self_corrections(text):
 
 
 def retry_transcription():
-    """Re-transcribe using state.retry_buffer. Runs in daemon thread after user click."""
+    """Re-transcribe using state.retry_buffer. Runs in daemon thread after user click.
+
+    macOS-only path: imports AppKit/hud lazily so the module stays importable
+    on headless Linux (VPS relay reuses transcribe_with_fallback only).
+    """
+    import AppKit
     from . import hud, macos, notes, predict
 
     try:
@@ -317,8 +328,9 @@ def retry_transcription():
             return
         audio = np.concatenate(buf_copy, axis=0).flatten()
         duration = len(audio) / cfg.SAMPLE_RATE
+        model_override = cfg.CONFIG.note_model if mode_snapshot.get("note_mode") else None
         with span("retry_total"):
-            text = transcribe_with_fallback(audio, duration)
+            text = transcribe_with_fallback(audio, duration, model_override=model_override)
         if text is PERMANENT_API_ERROR:
             with state.lock:
                 state.retry_buffer = None

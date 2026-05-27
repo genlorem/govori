@@ -22,6 +22,7 @@ LOG_FILE = CONFIG_DIR / "govori.log"
 class GovoriConfig(BaseModel):
     language: str = Field(default="ru", pattern=r"^(en|ru)$")
     model: str = Field(default="whisper-large-v3-turbo")
+    note_model: Optional[str] = Field(default="whisper-large-v3")
     sample_rate: int = Field(default=16000, ge=8000, le=48000)
     whisper_prompt: str = Field(default="")
     base_url: Optional[str] = Field(default=None)

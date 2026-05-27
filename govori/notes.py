@@ -15,7 +15,16 @@ try:
 except ImportError:
     Anthropic = None
 from . import config as cfg
-from .hud import _tooltip, set_hud
+try:
+    from .hud import _tooltip, set_hud
+except Exception:
+    # Headless context (VPS relay): no HUD — replace with no-ops so the
+    # note pipeline (transcribe → classify → save) works without macOS.
+    def set_hud(*args, **kwargs):
+        return None
+
+    def _tooltip(*args, **kwargs):
+        return ""
 from .state import PERMANENT_API_ERROR, stash_retry_buffer
 from .transcribe import _is_hallucination, transcribe_with_fallback
 VALID_TYPES = {'idea', 'commitment', 'observation', 'todo', 'decision', 'question', 'other'}
@@ -65,7 +74,7 @@ def _save_note_audio_background(audio, duration_sec):
 def _note_pipeline_background(audio, duration_sec):
     """Full note pipeline: transcribe -> filter -> classify -> save. No HUD updates."""
     threading.Thread(target=lambda a=audio, d=duration_sec: _save_note_audio_background(a, d), daemon=True).start()
-    text = transcribe_with_fallback(audio, duration_sec)
+    text = transcribe_with_fallback(audio, duration_sec, model_override=cfg.CONFIG.note_model)
     if text is PERMANENT_API_ERROR:
         set_hud(True, mode='error_fatal', tooltip=_tooltip('api_network'))
         return
