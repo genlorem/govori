@@ -10,7 +10,7 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from loguru import logger
 
@@ -303,8 +303,24 @@ async def dict_test_endpoint(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "text": canned, "duration_sec": 0.0, "test": True})
 
 
+def _learn_in_background(text: str) -> None:
+    """Run the Haiku pass after the fast response is already sent.
+
+    Fast /dict returns instantly (deterministic map only). This runs in the
+    response background so the user pays no latency, yet Haiku still inspects
+    the transcript for not-yet-learned term errors and logs them to the review
+    queue — so the glossary keeps growing from everyday dictation.
+    """
+    try:
+        from govori.correct import correct_transcript  # noqa: PLC0415
+
+        correct_transcript(text, source="dict-bg", use_ai=True)
+    except Exception as exc:  # never let background work surface
+        logger.info("background learn skipped: {}", exc)
+
+
 @app.post("/dict")
-async def dict_endpoint(request: Request) -> JSONResponse:
+async def dict_endpoint(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     t0 = time.monotonic()
     file_bytes, src = await _extract_audio_bytes(request)
     logger.debug("/dict received {} bytes source={}", len(file_bytes), src)
@@ -345,7 +361,12 @@ async def dict_endpoint(request: Request) -> JSONResponse:
     from govori.correct import correct_transcript  # noqa: PLC0415
 
     use_ai = bool(request.query_params.get("ai"))
+    raw_text = text
     text, _edits = correct_transcript(text, source="dict", use_ai=use_ai)
+    # Fast mode: discover new term errors in the background (no user latency),
+    # feeding the review queue so the map grows from everyday dictation.
+    if not use_ai:
+        background_tasks.add_task(_learn_in_background, raw_text)
 
     latency = (time.monotonic() - t0) * 1000
     logger.info(
