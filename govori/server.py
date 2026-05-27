@@ -327,6 +327,24 @@ async def dict_test_endpoint(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "text": canned, "duration_sec": 0.0, "test": True})
 
 
+_TYPE_RU = {"idea": "идея", "commitment": "обязательство", "observation": "наблюдение",
+            "todo": "дело", "decision": "решение", "question": "вопрос", "other": "прочее"}
+_URGENCY_RU = {"low": "низкая", "medium": "средняя", "high": "высокая"}
+
+
+def _category_line(context: str, meta: dict, *, saved: bool, merged: bool = False) -> str:
+    """Human notification text focused on the CATEGORY, not the transcript."""
+    type_ru = _TYPE_RU.get(meta.get("type", ""), meta.get("type", ""))
+    urg_ru = _URGENCY_RU.get(meta.get("urgency", ""), meta.get("urgency", ""))
+    ctxs = ", ".join(meta.get("contexts") or [context])
+    tail = " · ".join(x for x in [type_ru, f"важность: {urg_ru}" if urg_ru else ""] if x)
+    if not saved:  # preview
+        head = f"→ {ctxs}"
+    else:
+        head = f"✓ {'объединено с' if merged else 'сохранено в'} {ctxs}"
+    return f"{head}\n{tail}" if tail else head
+
+
 def _learn_in_background(text: str) -> None:
     """Run the Haiku pass after the fast response is already sent.
 
@@ -450,6 +468,24 @@ async def note_endpoint(request: Request) -> JSONResponse:
 
     text, _edits = correct_transcript(text, source="note", use_ai=True)
 
+    # Preview mode (?preview=1): classify but DON'T save. Lets the shortcut show
+    # an on-screen confirm ("→ marquiz · дело · высокая, сохранить?") before the
+    # real save call. Returns the category, not the transcript.
+    is_preview = bool(request.query_params.get("preview"))
+    wants_text = bool(request.query_params.get("text"))
+
+    if is_preview:
+        from govori.notes import classify_note  # noqa: PLC0415
+
+        meta = classify_note(text)
+        contexts = meta.get("contexts") or []
+        context = contexts[0] if contexts else "default"
+        if wants_text:
+            return PlainTextResponse(_category_line(context, meta, saved=False))
+        return JSONResponse({"ok": True, "preview": True, "context": context,
+                             "contexts": contexts, "type": meta.get("type"),
+                             "urgency": meta.get("urgency"), "title": meta.get("title")})
+
     try:
         result = save_or_merge_note(text, duration)
     except Exception as exc:
@@ -477,9 +513,9 @@ async def note_endpoint(request: Request) -> JSONResponse:
         result.get("action", "saved"),
         context,
     )
-    if request.query_params.get("text"):
-        action_ru = "объединено" if result.get("action") == "merged" else "сохранено"
-        return PlainTextResponse(f"[{context}] {action_ru}: {text}")
+    if wants_text:
+        return PlainTextResponse(_category_line(context, meta, saved=True,
+                                                merged=result.get("action") == "merged"))
     return JSONResponse(
         {
             "ok": True,
