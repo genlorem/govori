@@ -201,6 +201,32 @@ def build_shortcut(name: str, url: str, mode: str) -> dict:
     }
 
 
+def _sign(path: Path) -> Path:
+    """Wrap an unsigned .shortcut plist into Apple's signed binary format.
+
+    Required because iOS 17+ refuses to import unsigned shortcuts from
+    AirDrop / Files / iCloud Drive — error: "Импорт неподписанных быстрых
+    команд не поддерживается". macOS Shortcuts.app accepts unsigned, but
+    that doesn't help when targeting iPhone.
+    `shortcuts sign --mode anyone` is the only path that lets the file be
+    imported by anyone, not just contacts in your address book.
+    """
+    import subprocess
+
+    signed = path.with_name(path.stem + "_signed.shortcut")
+    res = subprocess.run(
+        ["/usr/bin/shortcuts", "sign", "--mode", "anyone",
+         "--input", str(path), "--output", str(signed)],
+        capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        # ERROR lines about "Unrecognized attribute string flag" are benign
+        # Foundation warnings — only fail on non-zero exit.
+        print(f"  ! sign failed (rc={res.returncode}): {res.stderr.strip()[:200]}")
+        return path
+    return signed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -212,6 +238,11 @@ def main() -> None:
         "--out-dir",
         default=str(Path(__file__).parent),
         help="Where to write the .shortcut files",
+    )
+    parser.add_argument(
+        "--no-sign",
+        action="store_true",
+        help="Skip Apple signing step (iPhone import will fail; mac-only)",
     )
     args = parser.parse_args()
 
@@ -227,7 +258,11 @@ def main() -> None:
         path = out_dir / filename
         with path.open("wb") as f:
             plistlib.dump(sc, f, fmt=plistlib.FMT_XML)
-        print(f"✓ {path}  →  POST {url}")
+        if args.no_sign:
+            print(f"✓ {path}  →  POST {url}  (unsigned)")
+        else:
+            signed = _sign(path)
+            print(f"✓ {signed}  →  POST {url}  (signed, iPhone-ready)")
 
 
 if __name__ == "__main__":
