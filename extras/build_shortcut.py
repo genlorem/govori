@@ -249,11 +249,13 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for name, mode, filename in [
-        ("Govori Dict", "dict", "Govori_Dict.shortcut"),
-        ("Govori Note", "note", "Govori_Note.shortcut"),
-    ]:
-        url = args.url.rstrip("/") + ("/dict" if mode == "dict" else "/note")
+    targets = [
+        ("Govori Dict",      "dict", "/dict",      "Govori_Dict.shortcut"),
+        ("Govori Note",      "note", "/note",      "Govori_Note.shortcut"),
+        ("Govori Dict TEST", "dict", "/dict-test", "Govori_DictTest.shortcut"),
+    ]
+    for name, mode, path_suffix, filename in targets:
+        url = args.url.rstrip("/") + path_suffix
         sc = build_shortcut(name=name, url=url, mode=mode)
         path = out_dir / filename
         with path.open("wb") as f:
