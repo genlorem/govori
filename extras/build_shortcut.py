@@ -109,13 +109,16 @@ def build_shortcut(name: str, url: str, mode: str) -> dict:
             },
         },
         # 3. Get Dictionary Value (key=text)
+        # WFDictionaryKey must be a WFTextTokenString — plain strings here
+        # silently return empty (shortcut "ran" but Get Dictionary Value yielded
+        # nothing, so Clipboard/Notification get empty).
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
             "WFWorkflowActionParameters": {
                 "UUID": dict_value_uuid,
                 "CustomOutputName": "Transcript",
                 "WFGetDictionaryValueType": "Value",
-                "WFDictionaryKey": "text",
+                "WFDictionaryKey": _text_token("text"),
                 "WFInput": _attach(download_uuid, "Server Response"),
             },
         },
