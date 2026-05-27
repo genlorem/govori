@@ -10,8 +10,8 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 
 import govori.config as cfg
@@ -91,6 +91,35 @@ def _decode_audio(file_bytes: bytes) -> tuple[np.ndarray, float]:
         ) from exc
 
 
+async def _extract_audio_bytes(request: Request) -> tuple[bytes, str]:
+    """Get audio bytes from either multipart form-data or a raw request body.
+
+    iPhone Shortcuts can POST audio two ways:
+      - "Request Body = Form" → multipart, file in field `audio`
+      - "Request Body = File" → raw bytes, no field name (simpler to wire,
+        no magic-variable form item needed in the shortcut)
+    Returns (bytes, source_label).
+    """
+    ctype = request.headers.get("content-type", "")
+    if ctype.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("audio")
+        if upload is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"ok": False, "error": "no `audio` field in form", "reason": "bad_format"},
+            )
+        return await upload.read(), f"form:{getattr(upload, 'filename', '?')}"
+    # Raw body (application/octet-stream, audio/*, or anything non-multipart)
+    body = await request.body()
+    if not body:
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "error": "empty request body", "reason": "bad_format"},
+        )
+    return body, f"raw:{ctype or 'no-ctype'}"
+
+
 def _check_audio_quality(audio: np.ndarray, duration_sec: float) -> None:
     if duration_sec < 0.5:
         raise HTTPException(
@@ -168,12 +197,13 @@ async def health() -> JSONResponse:
 
 
 @app.post("/dict-test")
-async def dict_test_endpoint(audio: UploadFile = File(None)) -> JSONResponse:
+async def dict_test_endpoint(request: Request) -> JSONResponse:
     """Test endpoint: returns a fixed canned transcript without touching audio.
 
     Used to verify the iPhone Shortcut UX end-to-end (Record → POST → Clipboard
     → Notification) when the user can't speak or wants to validate pipeline
-    plumbing without burning Groq calls. Accepts a file but never reads it.
+    plumbing without burning Groq calls. Accepts any body (form or raw) and
+    never reads it.
     """
     canned = (
         "Тестовая транскрипция Govori. Если ты видишь этот текст в буфере "
@@ -181,14 +211,16 @@ async def dict_test_endpoint(audio: UploadFile = File(None)) -> JSONResponse:
         "работает целиком."
     )
     logger.info("/dict-test -> canned response")
+    if request.query_params.get("text"):
+        return PlainTextResponse(canned)
     return JSONResponse({"ok": True, "text": canned, "duration_sec": 0.0, "test": True})
 
 
 @app.post("/dict")
-async def dict_endpoint(audio: UploadFile = File(...)) -> JSONResponse:
+async def dict_endpoint(request: Request) -> JSONResponse:
     t0 = time.monotonic()
-    file_bytes = await audio.read()
-    logger.debug("/dict received {} bytes filename={}", len(file_bytes), audio.filename)
+    file_bytes, src = await _extract_audio_bytes(request)
+    logger.debug("/dict received {} bytes source={}", len(file_bytes), src)
 
     arr, duration = _decode_audio(file_bytes)
     _check_audio_quality(arr, duration)
@@ -228,14 +260,19 @@ async def dict_endpoint(audio: UploadFile = File(...)) -> JSONResponse:
         duration,
         latency,
     )
+    # iPhone Shortcuts use ?text=1 → plain text, so the response itself IS the
+    # transcript and auto-chains straight into Set Clipboard (no JSON parsing,
+    # no magic-variable key extraction needed).
+    if request.query_params.get("text"):
+        return PlainTextResponse(text)
     return JSONResponse({"ok": True, "text": text, "duration_sec": round(duration, 2)})
 
 
 @app.post("/note")
-async def note_endpoint(audio: UploadFile = File(...)) -> JSONResponse:
+async def note_endpoint(request: Request) -> JSONResponse:
     t0 = time.monotonic()
-    file_bytes = await audio.read()
-    logger.debug("/note received {} bytes filename={}", len(file_bytes), audio.filename)
+    file_bytes, src = await _extract_audio_bytes(request)
+    logger.debug("/note received {} bytes source={}", len(file_bytes), src)
 
     arr, duration = _decode_audio(file_bytes)
     _check_audio_quality(arr, duration)
@@ -295,6 +332,9 @@ async def note_endpoint(audio: UploadFile = File(...)) -> JSONResponse:
         result.get("action", "saved"),
         context,
     )
+    if request.query_params.get("text"):
+        action_ru = "объединено" if result.get("action") == "merged" else "сохранено"
+        return PlainTextResponse(f"[{context}] {action_ru}: {text}")
     return JSONResponse(
         {
             "ok": True,

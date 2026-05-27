@@ -88,13 +88,27 @@ def _text_with_attachment(prefix: str, output_uuid: str, output_name: str) -> di
 
 
 def build_shortcut(name: str, url: str, mode: str) -> dict:
-    """Build a 5-action shortcut: Record Audio → POST → extract `text` → Clipboard → Notify."""
+    """Build a 4-action shortcut relying on Shortcuts AUTO-CHAINING.
+
+    Record Audio → POST (raw File body) → Set Clipboard → Notification.
+
+    Design notes (learned the hard way):
+    - Server is hit with ?text=1 so the response is `text/plain` — the response
+      IS the transcript. No "Get Dictionary Value", no JSON key extraction.
+    - Actions with NO `WFInput` automatically receive the previous action's
+      output (the canonical Shortcuts model). This sidesteps the fragile
+      WFTokenAttachment / WFTextTokenString encoding that silently dropped
+      magic-variable wires in earlier versions.
+    - Request body is `File` (raw bytes), not multipart Form — removes the one
+      remaining magic-variable reference (the audio file form item).
+    - Only the notification body keeps an explicit output reference, via
+      _text_with_attachment, which is the one encoding confirmed to render.
+    """
     record_uuid = _uuid()
     download_uuid = _uuid()
-    dict_value_uuid = _uuid()
 
     actions = [
-        # 1. Record Audio
+        # 1. Record Audio (output auto-feeds the next action)
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.recordaudio",
             "WFWorkflowActionParameters": {
@@ -106,87 +120,58 @@ def build_shortcut(name: str, url: str, mode: str) -> dict:
                 "WFRecordingQuality": "Normal",
             },
         },
-        # 2. Get Contents of URL — POST multipart with audio file
+        # 2. Get Contents of URL — POST raw audio body, no explicit input
+        #    (auto-chains Recorded Audio as the File body). Returns plain text.
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
             "WFWorkflowActionParameters": {
                 "UUID": download_uuid,
-                "CustomOutputName": "Server Response",
+                "CustomOutputName": "Transcript",
                 "WFURL": url,
                 "WFHTTPMethod": "POST",
-                "WFHTTPBodyType": "Form",
+                "WFHTTPBodyType": "File",
                 "ShowHeaders": False,
-                "WFFormValues": {
-                    "Value": {
-                        "WFDictionaryFieldValueItems": [
-                            {
-                                # WFItemType: 0=Text, 4=Number, 5=Date, 6=File
-                                "WFItemType": 6,
-                                "WFKey": _text_token("audio"),
-                                "WFValue": _attach(record_uuid, "Recorded Audio"),
-                            }
-                        ]
-                    },
-                    "WFSerializationType": "WFDictionaryFieldValue",
-                },
-            },
-        },
-        # 3. Get Dictionary Value (key=text)
-        # WFDictionaryKey must be a WFTextTokenString — plain strings here
-        # silently return empty (shortcut "ran" but Get Dictionary Value yielded
-        # nothing, so Clipboard/Notification get empty).
-        {
-            "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
-            "WFWorkflowActionParameters": {
-                "UUID": dict_value_uuid,
-                "CustomOutputName": "Transcript",
-                "WFGetDictionaryValueType": "Value",
-                "WFDictionaryKey": _text_token("text"),
-                "WFInput": _var_input(download_uuid, "Server Response"),
             },
         },
     ]
 
     if mode == "dict":
-        # 4. Copy to Clipboard
+        # 3. Copy to Clipboard — no WFInput, auto-chains the plain-text response
         actions.append(
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.setclipboard",
-                "WFWorkflowActionParameters": {
-                    "WFInput": _var_input(dict_value_uuid, "Transcript"),
-                    "WFLocalOnly": True,
-                },
+                "WFWorkflowActionParameters": {"WFLocalOnly": True},
             }
         )
-        # 5. Show Notification with the transcript
+        # 4. Show Notification — body references the URL output (renders reliably)
         actions.append(
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.notification",
                 "WFWorkflowActionParameters": {
                     "WFNotificationActionTitle": "Govori",
                     "WFNotificationActionBody": _text_with_attachment(
-                        "✓ ", dict_value_uuid, "Transcript"
+                        "✓ ", download_uuid, "Transcript"
                     ),
                     "WFNotificationActionSound": False,
                 },
             }
         )
     elif mode == "note":
-        # 4. Vibrate (quick haptic) — note is fire-and-forget, no clipboard
+        # 3. Vibrate — note is fire-and-forget, no clipboard
         actions.append(
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.vibrate",
                 "WFWorkflowActionParameters": {},
             }
         )
-        # 5. Show Notification with transcript preview
+        # 4. Show Notification with the server's plain-text confirmation
         actions.append(
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.notification",
                 "WFWorkflowActionParameters": {
-                    "WFNotificationActionTitle": "Govori — заметка сохранена",
+                    "WFNotificationActionTitle": "Govori — заметка",
                     "WFNotificationActionBody": _text_with_attachment(
-                        "", dict_value_uuid, "Transcript"
+                        "", download_uuid, "Transcript"
                     ),
                     "WFNotificationActionSound": False,
                 },
@@ -276,9 +261,9 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     targets = [
-        ("Govori Dict",      "dict", "/dict",      "Govori_Dict.shortcut"),
-        ("Govori Note",      "note", "/note",      "Govori_Note.shortcut"),
-        ("Govori Dict TEST", "dict", "/dict-test", "Govori_DictTest.shortcut"),
+        ("Govori Dict",      "dict", "/dict?text=1",      "Govori_Dict.shortcut"),
+        ("Govori Note",      "note", "/note?text=1",      "Govori_Note.shortcut"),
+        ("Govori Dict TEST", "dict", "/dict-test?text=1", "Govori_DictTest.shortcut"),
     ]
     for name, mode, path_suffix, filename in targets:
         url = args.url.rstrip("/") + path_suffix
