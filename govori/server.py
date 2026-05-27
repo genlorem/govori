@@ -223,15 +223,39 @@ app = FastAPI(title="govori-relay", lifespan=lifespan)
 # Token accepted as header `X-Govori-Token` or query `?token=`.
 # ---------------------------------------------------------------------------
 _OPEN_PATHS = {"/health", "/review/icon.png"}
+# Owner pages — only the master token may reach them (customers can't).
+_OWNER_PREFIXES = ("/review",)
 
 
 @app.middleware("http")
 async def _auth(request: Request, call_next):
-    token = os.environ.get("GOVORI_TOKEN")
-    if token and request.url.path not in _OPEN_PATHS:
-        sent = request.headers.get("x-govori-token") or request.query_params.get("token")
-        if sent != token:
-            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    path = request.url.path
+    if path in _OPEN_PATHS:
+        return await call_next(request)
+
+    master = os.environ.get("GOVORI_TOKEN")
+    sent = request.headers.get("x-govori-token") or request.query_params.get("token")
+
+    # No auth configured at all → open (Tailscale-only dev mode).
+    if not master:
+        return await call_next(request)
+
+    # Master token = owner: full access, no device binding.
+    if sent and sent == master:
+        return await call_next(request)
+
+    # Otherwise treat as a customer token (per-device licensing).
+    from govori.tokens import check  # noqa: PLC0415
+
+    device_id = request.headers.get("x-device-id") or request.query_params.get("device")
+    ok, reason = check(sent, device_id)
+    if not ok:
+        # 403 for device conflict (valid token, wrong device); 401 otherwise.
+        code = 403 if reason in ("device_mismatch", "no_device_id") else 401
+        return JSONResponse({"ok": False, "error": "unauthorized", "reason": reason}, status_code=code)
+    # Customers may only dictate / take notes — not the owner review console.
+    if any(path.startswith(p) for p in _OWNER_PREFIXES):
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
     return await call_next(request)
 
 
