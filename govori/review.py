@@ -166,6 +166,10 @@ button { flex:1; border:0; border-radius:10px; padding:12px; font-size:15px; fon
 .dictrow .del { background:none; border:0; color:#5a5a63; font-size:18px; padding:2px 8px; flex:0; }
 .dfilter { width:100%; background:#16161d; border:1px solid #26262f; border-radius:10px; color:#e8e8ea;
            padding:10px 12px; font-size:15px; margin-bottom:10px; }
+.addrow { display:flex; align-items:center; gap:6px; margin-bottom:10px; }
+.addinp { flex:1; min-width:0; background:#16161d; border:1px solid #26262f; border-radius:10px;
+          color:#e8e8ea; padding:10px; font-size:14px; }
+.addbtn { flex:0 0 44px; background:#1f6f43; color:#fff; border:0; border-radius:10px; font-size:22px; padding:8px; }
 </style></head><body>
 <h1>Ревью словаря Govori</h1>
 <div class="sub" id="sub">загрузка…</div>
@@ -173,6 +177,12 @@ button { flex:1; border:0; border-radius:10px; padding:12px; font-size:15px; fon
 <div id="dictwrap">
   <h2 style="font-size:16px;margin:24px 0 4px;">Словарь <span class="tag" id="dictcount"></span></h2>
   <div style="color:#8a8a93;font-size:13px;margin-bottom:12px;">новые слова сверху</div>
+  <div class="addrow">
+    <input id="addfrom" class="addinp" placeholder="как слышит (ошибка)">
+    <span class="arrow">→</span>
+    <input id="addto" class="addinp" placeholder="как правильно">
+    <button class="addbtn" id="addbtn">＋</button>
+  </div>
   <input class="dfilter" id="dfilter" placeholder="поиск по словарю…" oninput="renderDict()">
   <div id="dict"></div>
 </div>
@@ -222,6 +232,18 @@ async function loadDict() {
   document.getElementById('dictcount').textContent = DICT.length;
   renderDict();
 }
+async function addEntry() {
+  const f = document.getElementById('addfrom').value.trim();
+  const t = document.getElementById('addto').value.trim();
+  if (!f || !t) { flash('заполни оба поля'); return; }
+  await fetch('/review/action' + q, {method:'POST',
+    headers:{'Content-Type':'application/json', 'X-Govori-Token': TOKEN},
+    body: JSON.stringify({from:f, to:t, accept:true})});
+  document.getElementById('addfrom').value=''; document.getElementById('addto').value='';
+  flash('✓ Добавлено: '+t);
+  loadDict();
+}
+document.getElementById('addbtn').onclick = addEntry;
 function renderDict() {
   const f = (document.getElementById('dfilter').value||'').toLowerCase();
   const box = document.getElementById('dict'); box.innerHTML='';
