@@ -296,6 +296,13 @@ async def dict_endpoint(request: Request) -> JSONResponse:
             },
         )
 
+    # Layer 1: glossary post-correction. Default = instant deterministic map
+    # (zero added latency). ?ai=1 also runs the Haiku long-tail pass (~+1s).
+    from govori.correct import correct_transcript  # noqa: PLC0415
+
+    use_ai = bool(request.query_params.get("ai"))
+    text, _edits = correct_transcript(text, source="dict", use_ai=use_ai)
+
     latency = (time.monotonic() - t0) * 1000
     logger.info(
         "/dict size={}B dur={:.2f}s latency={:.0f}ms -> ok",
@@ -347,6 +354,12 @@ async def note_endpoint(request: Request) -> JSONResponse:
                 "reason": "hallucination",
             },
         )
+
+    # Layer 1: glossary post-correction before classify+save. Notes run in the
+    # background, so always use the full Haiku pass (latency is not user-facing).
+    from govori.correct import correct_transcript  # noqa: PLC0415
+
+    text, _edits = correct_transcript(text, source="note", use_ai=True)
 
     try:
         result = save_or_merge_note(text, duration)
