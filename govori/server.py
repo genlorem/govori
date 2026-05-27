@@ -1,6 +1,7 @@
 """FastAPI relay server — receives audio from iPhone Shortcuts via Tailscale."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
