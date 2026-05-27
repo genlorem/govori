@@ -321,10 +321,16 @@ def _apply_merge_append(candidate, new_text, duration_sec):
     logger.info(f'⇪ merged into: {path.name} (conf n/a)')
 
 def save_or_merge_note(text, duration_sec):
-    """Entry point: classify → merge-check → either merge or save as new."""
+    """Entry point: classify → merge-check → either merge or save as new.
+
+    Returns a result dict for callers that need it (e.g. server.py):
+        {'action': 'merged'|'saved', 'meta': {...}, 'path': str, 'note_id': str}
+    or None if NOTES_CFG is missing or an exception bubbled up.
+    Existing callers (mac daemon, CLI) ignore the return value.
+    """
     if not cfg.NOTES_CFG:
         logger.info('notes plugin not configured')
-        return
+        return None
     try:
         meta = classify_note(text)
         if len(meta.get('contexts', [])) > 1:
@@ -336,10 +342,12 @@ def save_or_merge_note(text, duration_sec):
             cand = decision.get('candidate') or next((c for c in candidates if c['id'] == decision['target_id']), None)
             if cand:
                 _apply_merge_append(cand, text, duration_sec)
-                return
-        _save_note_with_meta(text, duration_sec, meta)
+                return {'action': 'merged', 'meta': meta, 'path': cand.get('path', ''), 'note_id': cand.get('id', '')}
+        path, note_id = _save_note_with_meta(text, duration_sec, meta)
+        return {'action': 'saved', 'meta': meta, 'path': path, 'note_id': note_id}
     except Exception as e:
         logger.info(f'save_or_merge_note error: {e}')
+        return None
 
 def _save_note_with_meta(text, duration_sec, meta):
     """Write note using a pre-computed meta dict (avoids re-classifying)."""
@@ -365,6 +373,7 @@ def _save_note_with_meta(text, duration_sec, meta):
     with index_path.open('a', encoding='utf-8') as f:
         f.write(json.dumps(index_entry, ensure_ascii=False) + '\n')
     logger.info(f"✎ saved: {note_path.name} [{', '.join(meta['contexts'])}] {meta['type']}/{meta['urgency']}")
+    return (str(note_path), note_id)
 
 def _read_index_entries(limit=30):
     if not cfg.NOTES_CFG:

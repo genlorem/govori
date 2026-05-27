@@ -126,8 +126,8 @@ async def lifespan(app: FastAPI):  # noqa: ANN001
     try:
         from govori.config import load_plugins  # noqa: PLC0415
 
-        plugins = load_plugins(PLUGINS_DIR)
-    except (ImportError, AttributeError):
+        plugins = load_plugins()
+    except (ImportError, AttributeError, TypeError):
         plugins = {}
     install_runtime_config(config, plugins)
     _bound_host = _resolve_bind_host()
@@ -252,7 +252,7 @@ async def note_endpoint(audio: UploadFile = File(...)) -> JSONResponse:
         )
 
     try:
-        meta = save_or_merge_note(text, duration)
+        result = save_or_merge_note(text, duration)
     except Exception as exc:
         logger.exception("/note save_failed: {}", exc)
         raise HTTPException(
@@ -260,21 +260,31 @@ async def note_endpoint(audio: UploadFile = File(...)) -> JSONResponse:
             detail={"ok": False, "error": str(exc), "reason": "save_failed"},
         ) from exc
 
+    if not result:
+        raise HTTPException(
+            status_code=500,
+            detail={"ok": False, "error": "save_or_merge_note returned None", "reason": "save_failed"},
+        )
+
+    meta = result.get("meta") or {}
     contexts = meta.get("contexts") or []
     context = contexts[0] if contexts else "default"
     latency = (time.monotonic() - t0) * 1000
     logger.info(
-        "/note size={}B dur={:.2f}s latency={:.0f}ms -> ok ctx={}",
+        "/note size={}B dur={:.2f}s latency={:.0f}ms -> {} ctx={}",
         len(file_bytes),
         duration,
         latency,
+        result.get("action", "saved"),
         context,
     )
     return JSONResponse(
         {
             "ok": True,
             "text": text,
-            "saved_to": meta.get("path"),
+            "saved_to": result.get("path", ""),
+            "action": result.get("action", "saved"),
+            "note_id": result.get("note_id", ""),
             "context": context,
             "contexts": contexts,
             "type": meta.get("type"),
