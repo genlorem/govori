@@ -98,6 +98,38 @@ def issue(owner: str, label: str, days: int | None = None) -> str:
     return tok
 
 
+def register(key: str, owner: str, subscription_id: str | None = None,
+             label: str = "Lemon Squeezy") -> None:
+    """Register an externally-issued key (Lemon Squeezy license) as a live token.
+
+    Idempotent: re-registering an existing key re-activates it and refreshes
+    owner/subscription without dropping its device binding.
+    """
+    if not key:
+        return
+    data = _load(use_cache=False)
+    rec = data.get(key, {"device": None, "created": _now()})
+    rec.update({"owner": owner, "label": label, "active": True})
+    if subscription_id:
+        rec["subscription_id"] = str(subscription_id)
+    rec.pop("expires", None)
+    data[key] = rec
+    _save(data)
+
+
+def revoke_by_subscription(subscription_id: str) -> int:
+    """Deactivate every token tied to a Lemon Squeezy subscription. Returns count."""
+    data = _load(use_cache=False)
+    n = 0
+    for rec in data.values():
+        if str(rec.get("subscription_id", "")) == str(subscription_id) and rec.get("active", True):
+            rec["active"] = False
+            n += 1
+    if n:
+        _save(data)
+    return n
+
+
 def revoke(token: str) -> bool:
     data = _load(use_cache=False)
     if token in data:
