@@ -5,7 +5,6 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=gen
 WorkingDirectory=/home/gen/Projects/govori
 EnvironmentFile=-/home/gen/.config/govori/env
 ExecStart=/home/gen/Projects/govori/.venv/bin/python -m govori.server
