@@ -272,11 +272,25 @@ async def review_data() -> JSONResponse:
     return JSONResponse(pending_edits())
 
 
+@app.get("/review/dict")
+async def review_dict() -> JSONResponse:
+    from govori.review import dictionary_entries  # noqa: PLC0415
+
+    return JSONResponse(dictionary_entries())
+
+
 @app.post("/review/action")
 async def review_action(request: Request) -> JSONResponse:
-    from govori.review import accept_correction, mark_reviewed  # noqa: PLC0415
+    from govori.review import (  # noqa: PLC0415
+        accept_correction,
+        mark_reviewed,
+        remove_correction,
+    )
 
     body = await request.json()
+    if body.get("remove"):
+        remove_correction(body["remove"])
+        return JSONResponse({"ok": True})
     if body.get("accept"):
         accept_correction(body.get("from", ""), body.get("to", ""))
     mark_reviewed(body.get("ts", ""))

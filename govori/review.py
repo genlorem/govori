@@ -61,6 +61,38 @@ def pending_edits() -> list[dict]:
     return cards
 
 
+def dictionary_entries() -> list[dict]:
+    """The permanent corrections map, newest-added first.
+
+    corrections.json is a plain {from: to} dict; Python preserves insertion
+    order, and accepted entries are appended, so reversing yields most-recent
+    first (seed entries sink to the bottom).
+    """
+    if not CORRECTIONS_MAP.exists():
+        return []
+    try:
+        cmap = json.loads(CORRECTIONS_MAP.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return [{"from": k, "to": v} for k, v in reversed(list(cmap.items()))]
+
+
+def remove_correction(frm: str) -> None:
+    """Drop an entry from the permanent map (e.g. a wrong accept)."""
+    if not frm or not CORRECTIONS_MAP.exists():
+        return
+    try:
+        cmap = json.loads(CORRECTIONS_MAP.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if frm in cmap:
+        del cmap[frm]
+        CORRECTIONS_MAP.write_text(
+            json.dumps(cmap, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        logger.info("review: removed {} ({} entries left)", frm, len(cmap))
+
+
 def accept_correction(frm: str, to: str) -> None:
     """Add a misrecognition→canonical pair to the permanent map."""
     if not frm or not to:
@@ -118,10 +150,23 @@ button { flex:1; border:0; border-radius:10px; padding:12px; font-size:15px; fon
 .flash { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#1f6f43;
          color:#fff; padding:10px 18px; border-radius:20px; opacity:0; transition:.2s; pointer-events:none; }
 .flash.show { opacity:1; }
+.dictrow { display:flex; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid #1e1e26; font-size:15px; }
+.dictrow .from { color:#b0b0b8; text-decoration:none; }
+.dictrow .arrow { color:#5a5a63; }
+.dictrow .to { color:#3ddc84; font-weight:600; flex:1; }
+.dictrow .del { background:none; border:0; color:#5a5a63; font-size:18px; padding:2px 8px; flex:0; }
+.dfilter { width:100%; background:#16161d; border:1px solid #26262f; border-radius:10px; color:#e8e8ea;
+           padding:10px 12px; font-size:15px; margin-bottom:10px; }
 </style></head><body>
 <h1>Ревью словаря Govori</h1>
 <div class="sub" id="sub">загрузка…</div>
 <div id="list"></div>
+<div id="dictwrap">
+  <h2 style="font-size:16px;margin:24px 0 4px;">Словарь <span class="tag" id="dictcount"></span></h2>
+  <div style="color:#8a8a93;font-size:13px;margin-bottom:12px;">новые слова сверху</div>
+  <input class="dfilter" id="dfilter" placeholder="поиск по словарю…" oninput="renderDict()">
+  <div id="dict"></div>
+</div>
 <div class="flash" id="flash"></div>
 <script>
 // Token lives in the page URL (?token=…). The data/action calls are separate
@@ -159,8 +204,38 @@ async function act(c, accept, el) {
   flash(accept ? '✓ В словарь: '+c.to : 'Пропущено');
   el.remove();
   if(!document.querySelectorAll('.card').length) load();
+  if(accept) loadDict();
 }
-load();
+
+let DICT = [];
+async function loadDict() {
+  const r = await fetch('/review/dict' + q); DICT = await r.json();
+  document.getElementById('dictcount').textContent = DICT.length;
+  renderDict();
+}
+function renderDict() {
+  const f = (document.getElementById('dfilter').value||'').toLowerCase();
+  const box = document.getElementById('dict'); box.innerHTML='';
+  const rows = DICT.filter(e => !f || (e.from+e.to).toLowerCase().includes(f));
+  for (const e of rows) {
+    const row = document.createElement('div'); row.className='dictrow';
+    row.innerHTML = '<span class="from">'+esc(e.from)+'</span><span class="arrow">→</span>'
+      + '<span class="to">'+esc(e.to)+'</span><button class="del">✕</button>';
+    row.querySelector('.del').onclick = () => delEntry(e, row);
+    box.appendChild(row);
+  }
+}
+async function delEntry(e, row) {
+  if(!confirm('Удалить из словаря: '+e.from+' → '+e.to+'?')) return;
+  row.style.opacity=.4;
+  await fetch('/review/action' + q, {method:'POST',
+    headers:{'Content-Type':'application/json', 'X-Govori-Token': TOKEN},
+    body: JSON.stringify({remove:e.from})});
+  flash('Удалено: '+e.from); row.remove();
+  DICT = DICT.filter(x => x.from !== e.from);
+  document.getElementById('dictcount').textContent = DICT.length;
+}
+load(); loadDict();
 </script></body></html>"""
 
 
