@@ -1,0 +1,18 @@
+[Unit]
+Description=Govori relay server (iPhone Shortcuts -> Whisper)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gen
+WorkingDirectory=/home/gen/Projects/govori
+EnvironmentFile=-/home/gen/.config/govori/env
+ExecStart=/home/gen/Projects/govori/.venv/bin/python -m govori.server
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/gen/.config/govori/relay.log
+StandardError=append:/home/gen/.config/govori/relay.log
+
+[Install]
+WantedBy=default.target

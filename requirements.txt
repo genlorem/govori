@@ -9,3 +9,6 @@ loguru
 pydantic
 pyobjc-framework-Cocoa
 pyobjc-framework-Quartz
+fastapi
+uvicorn[standard]
+python-multipart
