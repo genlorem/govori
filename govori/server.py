@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from loguru import logger
 
 import govori.config as cfg
@@ -237,6 +237,31 @@ async def health() -> JSONResponse:
             "tailscale_ip": _bound_host,
         }
     )
+
+
+@app.get("/review", response_class=HTMLResponse)
+async def review_page() -> HTMLResponse:
+    from govori.review import render_page  # noqa: PLC0415
+
+    return HTMLResponse(render_page())
+
+
+@app.get("/review/data")
+async def review_data() -> JSONResponse:
+    from govori.review import pending_edits  # noqa: PLC0415
+
+    return JSONResponse(pending_edits())
+
+
+@app.post("/review/action")
+async def review_action(request: Request) -> JSONResponse:
+    from govori.review import accept_correction, mark_reviewed  # noqa: PLC0415
+
+    body = await request.json()
+    if body.get("accept"):
+        accept_correction(body.get("from", ""), body.get("to", ""))
+    mark_reviewed(body.get("ts", ""))
+    return JSONResponse({"ok": True})
 
 
 @app.post("/dict-test")
