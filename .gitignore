@@ -43,3 +43,4 @@ dist/
 
 # Bench artifacts (transcripts may contain user voice content)
 bench/results.json
+extras/govori-urls.txt

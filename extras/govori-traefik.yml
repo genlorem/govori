@@ -1,0 +1,25 @@
+http:
+  routers:
+    govori-http:
+      rule: "Host(`govori.io`)"
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+      service: govori
+
+    govori-https:
+      rule: "Host(`govori.io`)"
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: "govori.io"
+      service: govori
+
+  services:
+    govori:
+      loadBalancer:
+        servers:
+          - url: "http://172.17.0.1:8765"
