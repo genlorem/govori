@@ -167,6 +167,23 @@ async def health() -> JSONResponse:
     )
 
 
+@app.post("/dict-test")
+async def dict_test_endpoint(audio: UploadFile = File(None)) -> JSONResponse:
+    """Test endpoint: returns a fixed canned transcript without touching audio.
+
+    Used to verify the iPhone Shortcut UX end-to-end (Record → POST → Clipboard
+    → Notification) when the user can't speak or wants to validate pipeline
+    plumbing without burning Groq calls. Accepts a file but never reads it.
+    """
+    canned = (
+        "Тестовая транскрипция Govori. Если ты видишь этот текст в буфере "
+        "обмена и в нотификации — значит pipeline iPhone→Tailscale→VPS→Shortcut "
+        "работает целиком."
+    )
+    logger.info("/dict-test -> canned response")
+    return JSONResponse({"ok": True, "text": canned, "duration_sec": 0.0, "test": True})
+
+
 @app.post("/dict")
 async def dict_endpoint(audio: UploadFile = File(...)) -> JSONResponse:
     t0 = time.monotonic()
