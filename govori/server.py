@@ -293,7 +293,8 @@ async def lemonsqueezy_webhook(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "bad signature"}, status_code=401)
     try:
         payload = json.loads(raw)
-    except Exception:
+    except Exception as exc:
+        logger.warning("LS webhook bad json: {} | len={} raw[:120]={!r}", exc, len(raw), raw[:120])
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
     return JSONResponse(ls.handle(payload))
 
