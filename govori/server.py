@@ -217,6 +217,25 @@ app = FastAPI(title="govori-relay", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
+# Auth — required only when GOVORI_TOKEN is set (i.e. exposed publicly via
+# govori.io). On Tailscale-only deployments leave it unset and everything is
+# open within the tailnet. /health is always open (for Traefik/uptime checks).
+# Token accepted as header `X-Govori-Token` or query `?token=`.
+# ---------------------------------------------------------------------------
+_OPEN_PATHS = {"/health"}
+
+
+@app.middleware("http")
+async def _auth(request: Request, call_next):
+    token = os.environ.get("GOVORI_TOKEN")
+    if token and request.url.path not in _OPEN_PATHS:
+        sent = request.headers.get("x-govori-token") or request.query_params.get("token")
+        if sent != token:
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
