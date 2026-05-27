@@ -29,7 +29,7 @@ def _text_token(s: str) -> dict:
 
 
 def _attach(output_uuid: str, output_name: str) -> dict:
-    """Reference an earlier action's output (Magic Variable)."""
+    """Pure WFTokenAttachment — for File/Value fields in form-data items."""
     return {
         "Value": {
             "OutputUUID": output_uuid,
@@ -37,6 +37,29 @@ def _attach(output_uuid: str, output_name: str) -> dict:
             "OutputName": output_name,
         },
         "WFSerializationType": "WFTokenAttachment",
+    }
+
+
+def _var_input(output_uuid: str, output_name: str) -> dict:
+    """WFTextTokenString with single-attachment-at-pos-0 — for action `WFInput` fields.
+
+    Apple's Shortcuts silently drops pure WFTokenAttachment values used as
+    WFInput, rendering the action's default placeholder ("Контент", "Словарь")
+    and effectively passing nothing. WFInput must be a text-style attachment
+    even when the "text" is just a single magic-variable reference.
+    """
+    return {
+        "Value": {
+            "string": "￼",  # Object Replacement Character
+            "attachmentsByRange": {
+                "{0, 1}": {
+                    "OutputUUID": output_uuid,
+                    "Type": "ActionOutput",
+                    "OutputName": output_name,
+                }
+            },
+        },
+        "WFSerializationType": "WFTextTokenString",
     }
 
 
@@ -119,7 +142,7 @@ def build_shortcut(name: str, url: str, mode: str) -> dict:
                 "CustomOutputName": "Transcript",
                 "WFGetDictionaryValueType": "Value",
                 "WFDictionaryKey": _text_token("text"),
-                "WFInput": _attach(download_uuid, "Server Response"),
+                "WFInput": _var_input(download_uuid, "Server Response"),
             },
         },
     ]
@@ -130,7 +153,7 @@ def build_shortcut(name: str, url: str, mode: str) -> dict:
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.setclipboard",
                 "WFWorkflowActionParameters": {
-                    "WFInput": _attach(dict_value_uuid, "Transcript"),
+                    "WFInput": _var_input(dict_value_uuid, "Transcript"),
                     "WFLocalOnly": True,
                 },
             }
