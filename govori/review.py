@@ -124,8 +124,12 @@ button { flex:1; border:0; border-radius:10px; padding:12px; font-size:15px; fon
 <div id="list"></div>
 <div class="flash" id="flash"></div>
 <script>
+// Token lives in the page URL (?token=…). The data/action calls are separate
+// requests that the auth middleware also guards, so forward the token to them.
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const q = TOKEN ? ('?token=' + encodeURIComponent(TOKEN)) : '';
 async function load() {
-  const r = await fetch('/review/data'); const cards = await r.json();
+  const r = await fetch('/review/data' + q); const cards = await r.json();
   const list = document.getElementById('list');
   document.getElementById('sub').textContent = cards.length
     ? cards.length + ' правок на проверку. «Верно» → попадёт в постоянный словарь.'
@@ -149,7 +153,8 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 function flash(t){const f=document.getElementById('flash');f.textContent=t;f.classList.add('show');setTimeout(()=>f.classList.remove('show'),1400);}
 async function act(c, accept, el) {
   el.style.opacity=.4;
-  await fetch('/review/action', {method:'POST', headers:{'Content-Type':'application/json'},
+  await fetch('/review/action' + q, {method:'POST',
+    headers:{'Content-Type':'application/json', 'X-Govori-Token': TOKEN},
     body: JSON.stringify({ts:c.ts, from:c.from, to:c.to, accept})});
   flash(accept ? '✓ В словарь: '+c.to : 'Пропущено');
   el.remove();
