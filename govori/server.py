@@ -222,7 +222,7 @@ app = FastAPI(title="govori-relay", lifespan=lifespan)
 # open within the tailnet. /health is always open (for Traefik/uptime checks).
 # Token accepted as header `X-Govori-Token` or query `?token=`.
 # ---------------------------------------------------------------------------
-_OPEN_PATHS = {"/health"}
+_OPEN_PATHS = {"/health", "/review/icon.png"}
 
 
 @app.middleware("http")
@@ -263,6 +263,16 @@ async def review_page() -> HTMLResponse:
     from govori.review import render_page  # noqa: PLC0415
 
     return HTMLResponse(render_page())
+
+
+@app.get("/review/icon.png")
+async def review_icon():
+    from fastapi.responses import Response  # noqa: PLC0415
+
+    from govori.review import icon_bytes  # noqa: PLC0415
+
+    return Response(content=icon_bytes(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/review/data")

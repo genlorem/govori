@@ -15,6 +15,9 @@ from loguru import logger
 from .correct import CORRECTIONS_LOG, CORRECTIONS_MAP
 
 
+ICON_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAEzElEQVR4nO3dO27bQBRGYSpQRxhw5c4195ANeU3ZUPYw6zDYpxDgyLJ+vmZI3sf5ijQJrLHm8A4lK8ml71+7/fX9ywGPkso4fu79ENf9vjRB7Or+6d0plPZx0MTxvp7ztpU0i4Mm4lXSIA6yMOi2KZWJVMVBFrET+VX5wLBv805tmRxkkWSErJ4clOHX2r1bFwdleLdqB5ceK2SR8IhZNDkoI54lezofB2VENbuzM3FQRmzT+7v9fQ6ENxUHYyODiV2WcVBGHmqvn8dBGdk83XHuOSA9iYOxkVP/Y3g8xkEZmfXf++BYgfQtDsYG+rvhweSA9D8OxgYeSmByQCIOzMXBmYJ7tx6YHJCIA5OfIU1+pgx/P9Rvld9/uqz6/uXS968J45gIQin5QkkXx4Ys0iaSKI7KLBIm8osyzu3MshSvVvbYyyFBH5e3t/curgO2sMQ9YiJPjmMu7iHuCIkcByqFjePIC3oIOjxixnH8bg0R+wgYx1n7NITrI2AcaCVaHOdevkOs4REtDjQUKg4LF+5gYA2thIoDbREHJOJAgjjsHPaDmZVUihMHmiMOSMQBiTggEQck4oBEHJCIAxJxQCIOSMQBiTggEQck4oBEHJCIAxJxQCIOSMQBiTggEQck4oBEHJCIAxJxQCIOSMQBiTggEQck4oBEHJCIAxJxQCIOSMQBiTggEQck4oBEHJCIAyHimP7HX+38L41lciWO/gnba2fe/bM5/P2wE8Hm7+X2q/1vxG4cjq6wym/QbCUW4wifhZdKPN1zzKZj4ckteg3uovcXB1LHMTsAzA6PUjE2LIw9B3Es4WtED65Waz2OmsvorEuwOFyzyziWMHW4lED3oQ7iWLLBRvoodWXYHBum41jI8nU5GF6b+zgWXlJqD465Iot4lIVlmB0bXddd3t7eO9vqn+WdruBS/YiWy7A+OZrMj532oEQvw0ccyx3WR4n42sTlsbL2Sd/14xSl0Re3PzY8xbF2X5snUtp9QRdlOItjpz2oP4yGiGX4i2PDRb/rZgyWFtOcvzg23zc03Jjh7AUcw2UcNfeVlTs0nPS4p/AaR6sXjTWfHYldhu84vLypUHyW4T4O44kUt1nEeYfU5h4Uk6tKF4fBnSjG1pP3WDF1xJQQWcSM48RESqAsIsdxcCIlXBbx4zjxwz4xpIjjS+Z3tDbIFUfUj2ztJMhL2W2W7HrJWkb2ODCNOCARByTigEQckIgDEnFAIg5IxAGJOCARByTigEQckIgDCT7PcfpHi+P9oD9CHKayiJQIxwrixmF2bHS215YiDuyHOBA3Dss3fcXw2lLEgf1EeClr8O6vOJ8ZN5e+f+37l7OXAYs4ViARByTiwGQc4/ip/wCSGsdPJgck4sBcHJwsuHfrgckBiTiwIA5OFjyUwOSA9C0OhgfGuze9mByQHuNgeGQ2fn+v/MnkoI+cxh8/ReFYgfQ8DoZHNk93XE4O+shD7fXUsUIfGUzsMvcc6DbGwfCIbXp/5ycHfUQ1u7OLjhX6iGfJnl5XfS3+hksAyy/1dTekjBDvVu3g6lcr9OHX2r27bn4MjhhHtl3S29/nYIR4sXmnrvWPyggxq/ICvrZaAYmY0mSuN4jjYTVUcqK2Z32zOL5QSXe4ne7//gEvIo1lbpZh/gAAAABJRU5ErkJggg=="
+
+
 def _read_log() -> list[dict]:
     if not CORRECTIONS_LOG.exists():
         return []
@@ -127,6 +130,12 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Govori · Ревью словаря</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Govori">
+<meta name="theme-color" content="#0b0b10">
+<link rel="apple-touch-icon" href="/review/icon.png">
+<link rel="icon" type="image/png" href="/review/icon.png">
 <style>
 :root { color-scheme: dark; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -241,3 +250,9 @@ load(); loadDict();
 
 def render_page() -> str:
     return PAGE
+
+
+def icon_bytes() -> bytes:
+    import base64  # noqa: PLC0415
+
+    return base64.b64decode(ICON_PNG_B64)
