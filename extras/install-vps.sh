@@ -33,6 +33,16 @@ echo "==> [5] Installing requirements-server.txt (headless Linux subset)"
 # requirements-server.txt is the pure-python subset needed by govori.server.
 pip install -r requirements-server.txt --quiet
 
+echo "==> [7.5] Normalizing ~/.config/govori/env for systemd"
+# systemd's EnvironmentFile= does NOT accept `export KEY=value` (bash-style).
+# Strip the `export ` prefix in place if present.
+if [[ -f "$HOME/.config/govori/env" ]] && grep -q '^export ' "$HOME/.config/govori/env"; then
+    sed -i 's/^export //' "$HOME/.config/govori/env"
+    echo "    stripped 'export' prefix from env file"
+else
+    echo "    env file already systemd-compatible (or missing)"
+fi
+
 echo "==> [8] Installing systemd user unit"
 mkdir -p ~/.config/systemd/user
 cp extras/govori-relay.service ~/.config/systemd/user/govori-relay.service
