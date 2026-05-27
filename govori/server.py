@@ -101,17 +101,20 @@ async def _extract_audio_bytes(request: Request) -> tuple[bytes, str]:
     Returns (bytes, source_label).
     """
     ctype = request.headers.get("content-type", "")
+    logger.debug("_extract: content-type={!r} len-hdr={}", ctype, request.headers.get("content-length"))
     if ctype.startswith("multipart/form-data"):
         form = await request.form()
-        upload = form.get("audio")
-        if upload is None:
+        logger.debug("_extract: multipart fields={}", list(form.keys()))
+        upload = form.get("audio") or (next(iter(form.values()), None))
+        if upload is None or isinstance(upload, str):
             raise HTTPException(
                 status_code=400,
-                detail={"ok": False, "error": "no `audio` field in form", "reason": "bad_format"},
+                detail={"ok": False, "error": f"no file in form (fields={list(form.keys())})", "reason": "bad_format"},
             )
         return await upload.read(), f"form:{getattr(upload, 'filename', '?')}"
     # Raw body (application/octet-stream, audio/*, or anything non-multipart)
     body = await request.body()
+    logger.debug("_extract: raw body len={}", len(body))
     if not body:
         raise HTTPException(
             status_code=400,
