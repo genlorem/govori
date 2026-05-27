@@ -1,0 +1,10 @@
+openai
+anthropic
+numpy
+av
+pyyaml
+loguru
+pydantic
+fastapi
+uvicorn[standard]
+python-multipart

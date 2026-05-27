@@ -28,19 +28,10 @@ echo "==> [4] Activating venv and upgrading pip"
 source .venv/bin/activate
 pip install -U pip --quiet
 
-echo "==> [5] Installing requirements.txt"
-pip install -r requirements.txt --quiet
-
-echo "==> [6] Installing server deps"
-pip install fastapi 'uvicorn[standard]' python-multipart av --quiet
-
-echo "==> [7] Updating requirements.txt with server deps"
-for pkg in fastapi "uvicorn[standard]" python-multipart av; do
-    if ! grep -qF "$pkg" requirements.txt 2>/dev/null; then
-        echo "$pkg" >> requirements.txt
-        echo "    added: $pkg"
-    fi
-done
+echo "==> [5] Installing requirements-server.txt (headless Linux subset)"
+# requirements.txt has macOS-only deps (pyobjc, sounddevice) that fail on Linux.
+# requirements-server.txt is the pure-python subset needed by govori.server.
+pip install -r requirements-server.txt --quiet
 
 echo "==> [8] Installing systemd user unit"
 mkdir -p ~/.config/systemd/user
