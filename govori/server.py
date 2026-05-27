@@ -170,7 +170,47 @@ async def lifespan(app: FastAPI):  # noqa: ANN001
         config.language,
         config.base_url,
     )
+    _warmup()
     yield
+
+
+def _warmup() -> None:
+    """Eliminate first-request cold start.
+
+    The first real request used to pay ~2s extra: lazy imports (transcribe,
+    notes→anthropic) loaded on demand, and PyAV's first decode/encode JIT-warmed
+    its codecs. Pre-pay all of that at startup against a tiny synthetic clip so
+    the user's first dictation is as fast as steady-state (~1s vs ~3.3s).
+    """
+    t0 = time.monotonic()
+    try:
+        # 1. Force the lazy imports the endpoints use
+        import govori.notes  # noqa: F401,PLC0415
+        import govori.transcribe  # noqa: F401,PLC0415
+        from govori.notes import _is_hallucination  # noqa: PLC0415
+
+        _is_hallucination("warmup")
+        # 2. Warm PyAV: encode+decode a 0.1s silent mono clip (no network)
+        silent = np.zeros(int(cfg.SAMPLE_RATE * 0.1), dtype=np.float32)
+        buf = BytesIO()
+        import av  # noqa: PLC0415
+
+        container = av.open(buf, mode="w", format="ogg")
+        stream = container.add_stream("libopus", rate=cfg.SAMPLE_RATE, layout="mono")
+        frame = av.AudioFrame.from_ndarray(
+            (silent * 32767).astype("int16").reshape(1, -1), format="s16", layout="mono"
+        )
+        frame.rate = cfg.SAMPLE_RATE
+        for pkt in stream.encode(frame):
+            container.mux(pkt)
+        for pkt in stream.encode(None):
+            container.mux(pkt)
+        container.close()
+        buf.seek(0)
+        _decode_audio(buf.read())
+        logger.info("Warmup done in {:.0f}ms", (time.monotonic() - t0) * 1000)
+    except Exception as exc:  # never block startup on warmup
+        logger.warning("Warmup skipped ({})", exc)
 
 
 app = FastAPI(title="govori-relay", lifespan=lifespan)
