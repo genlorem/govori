@@ -9,11 +9,31 @@ import contextlib
 import io
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# This smoke test imports the macOS daemon modules (audio/hud/macos/hotkey) for
+# real. It can't run when the relay test suite mocks the macOS stack (conftest)
+# or on Linux CI where pyobjc isn't installed — those contexts test the relay,
+# not the mac client. Skip there.
+_macos_mocked = isinstance(sys.modules.get("AppKit"), MagicMock)
+try:
+    import Quartz  # noqa: F401
+
+    _has_real_macos = not _macos_mocked
+except Exception:
+    _has_real_macos = False
+
+pytestmark = pytest.mark.skipif(
+    not _has_real_macos,
+    reason="macOS daemon import smoke — skipped when macOS stack mocked (relay tests) or absent (Linux CI)",
+)
 
 
 def test_imports_have_no_side_effects():
