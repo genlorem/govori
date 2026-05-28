@@ -77,7 +77,13 @@ def dictionary_entries() -> list[dict]:
         cmap = json.loads(CORRECTIONS_MAP.read_text(encoding="utf-8"))
     except Exception:
         return []
-    return [{"from": k, "to": v} for k, v in reversed(list(cmap.items()))]
+    out = []
+    for k, v in reversed(list(cmap.items())):
+        if isinstance(v, dict):
+            out.append({"from": k, "to": v.get("to", ""), "stem": bool(v.get("stem"))})
+        else:
+            out.append({"from": k, "to": v, "stem": False})
+    return out
 
 
 def remove_correction(frm: str) -> None:

@@ -44,7 +44,7 @@ def _read_lines(path: Path) -> list[str]:
     return out
 
 
-def _load_corrections_map() -> dict[str, str]:
+def _load_corrections_map() -> dict:
     if not CORRECTIONS_MAP.exists():
         return {}
     try:
@@ -52,6 +52,17 @@ def _load_corrections_map() -> dict[str, str]:
     except Exception as exc:
         logger.warning("corrections.json unreadable: {}", exc)
         return {}
+
+
+def _entry(value) -> tuple[str, bool]:
+    """Normalize a corrections.json value to (to, stem).
+
+    Value may be a plain string (exact word match) or
+    {"to": str, "stem": bool} (stem match for non-inflecting brand keys).
+    """
+    if isinstance(value, dict):
+        return value.get("to", ""), bool(value.get("stem", False))
+    return value or "", False
 
 
 def _build_glossary() -> str:
@@ -69,7 +80,7 @@ def _build_glossary() -> str:
         parts.append("ЛЮДИ (имя — кто это):\n" + "\n".join(people))
     cmap = _load_corrections_map()
     if cmap:
-        pairs = "\n".join(f"{k} → {v}" for k, v in cmap.items())
+        pairs = "\n".join(f"{k} → {_entry(v)[0]}" for k, v in cmap.items())
         parts.append("ИЗВЕСТНЫЕ ОШИБКИ РАСПОЗНАВАНИЯ (искажение → правильно):\n" + pairs)
     return "\n\n".join(parts)
 
@@ -117,10 +128,15 @@ def _apply_map(text: str) -> tuple[str, list[dict]]:
     corrected = text
     edits: list[dict] = []
     for frm in sorted(cmap, key=len, reverse=True):
-        to = cmap[frm]
+        to, stem = _entry(cmap[frm])
         if not frm or not to or frm == to:
             continue
-        pattern = r"(?<!\w)" + re.escape(frm) + r"(?!\w)"
+        # stem=True: foreign brand keys that don't inflect in the canonical form —
+        # one entry covers all Russian inflections ('марквиз\w*' → 'Marquiz').
+        # stem=False: exact word match (safe for Russian targets that DO inflect,
+        # and for short keys like 'скво' that must not eat 'сквозь').
+        suffix = r"\w*" if stem else r"(?!\w)"
+        pattern = r"(?<!\w)" + re.escape(frm) + suffix
         new, n = re.subn(pattern, lambda _m, t=to: t, corrected)
         if n:
             corrected = new

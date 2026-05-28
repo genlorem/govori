@@ -243,6 +243,7 @@ async def _auth(request: Request, call_next):
 
     # Master token = owner: full access, no device binding.
     if sent and sent == master:
+        request.state.is_master = True
         return await call_next(request)
 
     # Otherwise treat as a customer token (per-device licensing).
@@ -454,9 +455,11 @@ async def dict_endpoint(request: Request, background_tasks: BackgroundTasks) -> 
     use_ai = bool(request.query_params.get("ai"))
     raw_text = text
     text, _edits = correct_transcript(text, source="dict", use_ai=use_ai)
-    # Fast mode: discover new term errors in the background (no user latency),
-    # feeding the review queue so the map grows from everyday dictation.
-    if not use_ai:
+    # Background learning only for the owner (master token): it costs an extra
+    # Haiku call and logs the transcript — neither is acceptable for paying
+    # customers. They get the curated map; the owner's usage grows it.
+    is_master = getattr(request.state, "is_master", False)
+    if not use_ai and is_master:
         background_tasks.add_task(_learn_in_background, raw_text)
 
     latency = (time.monotonic() - t0) * 1000
