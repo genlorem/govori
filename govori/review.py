@@ -102,10 +102,20 @@ def remove_correction(frm: str) -> None:
         logger.info("review: removed {} ({} entries left)", frm, len(cmap))
 
 
-def accept_correction(frm: str, to: str) -> None:
-    """Add a misrecognition→canonical pair to the permanent map."""
-    if not frm or not to:
-        return
+def accept_correction(frm: str, to: str) -> tuple[bool, str]:
+    """Add a misrecognition→canonical pair to the permanent map.
+
+    Skips entries that won't help (already exist / no real benefit) via
+    should_add. Returns (added, reason) so the UI can explain a skip.
+    """
+    from .correct import should_add  # noqa: PLC0415
+
+    frm = (frm or "").strip()
+    to = (to or "").strip()
+    ok, reason = should_add(frm, to)
+    if not ok:
+        logger.info("review: skip {} -> {} ({})", frm, to, reason)
+        return False, reason
     cmap = {}
     if CORRECTIONS_MAP.exists():
         try:
@@ -117,6 +127,7 @@ def accept_correction(frm: str, to: str) -> None:
         json.dumps(cmap, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     logger.info("review: accepted {} -> {} ({} entries)", frm, to, len(cmap))
+    return True, "added"
 
 
 def mark_reviewed(ts: str) -> None:
@@ -221,15 +232,20 @@ async function load() {
 }
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 function flash(t){const f=document.getElementById('flash');f.textContent=t;f.classList.add('show');setTimeout(()=>f.classList.remove('show'),1400);}
+const REASON_RU = {case_only:'только регистр — без пользы', already_covered:'уже в словаре',
+                   no_change:'без изменений', empty:'пустое'};
 async function act(c, accept, el) {
   el.style.opacity=.4;
-  await fetch('/review/action' + q, {method:'POST',
+  const r = await fetch('/review/action' + q, {method:'POST',
     headers:{'Content-Type':'application/json', 'X-Govori-Token': TOKEN},
     body: JSON.stringify({ts:c.ts, from:c.from, to:c.to, accept})});
-  flash(accept ? '✓ В словарь: '+c.to : 'Пропущено');
+  const j = await r.json().catch(()=>({}));
+  if (!accept) flash('Пропущено');
+  else if (j.added) flash('✓ В словарь: '+c.to);
+  else flash('Не добавлено: '+(REASON_RU[j.reason]||j.reason||''));
   el.remove();
   if(!document.querySelectorAll('.card').length) load();
-  if(accept) loadDict();
+  if(accept && j.added) loadDict();
 }
 
 let DICT = [];
@@ -242,12 +258,17 @@ async function addEntry() {
   const f = document.getElementById('addfrom').value.trim();
   const t = document.getElementById('addto').value.trim();
   if (!f || !t) { flash('заполни оба поля'); return; }
-  await fetch('/review/action' + q, {method:'POST',
+  const r = await fetch('/review/action' + q, {method:'POST',
     headers:{'Content-Type':'application/json', 'X-Govori-Token': TOKEN},
     body: JSON.stringify({from:f, to:t, accept:true})});
-  document.getElementById('addfrom').value=''; document.getElementById('addto').value='';
-  flash('✓ Добавлено: '+t);
-  loadDict();
+  const j = await r.json().catch(()=>({}));
+  if (j.added) {
+    document.getElementById('addfrom').value=''; document.getElementById('addto').value='';
+    flash('✓ Добавлено: '+t);
+    loadDict();
+  } else {
+    flash('Не добавлено: '+(REASON_RU[j.reason]||j.reason||''));
+  }
 }
 document.getElementById('addbtn').onclick = addEntry;
 function renderDict() {

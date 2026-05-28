@@ -137,11 +137,34 @@ def _apply_map(text: str) -> tuple[str, list[dict]]:
         # and for short keys like 'скво' that must not eat 'сквозь').
         suffix = r"\w*" if stem else r"(?!\w)"
         pattern = r"(?<!\w)" + re.escape(frm) + suffix
-        new, n = re.subn(pattern, lambda _m, t=to: t, corrected)
+        # Case-insensitive: one entry "master" catches "Master"/"МАСТЕР" — no need
+        # to store per-case duplicates.
+        new, n = re.subn(pattern, lambda _m, t=to: t, corrected, flags=re.IGNORECASE)
         if n:
             corrected = new
             edits.append({"from": frm, "to": to})
     return corrected, edits
+
+
+def should_add(frm: str, to: str) -> tuple[bool, str]:
+    """Decide whether a from→to pair is worth adding to the map.
+
+    Rejects entries that won't help: empty, no-op, pure capitalization changes,
+    or already handled by the existing map (exact dup / covered by a stem or
+    case-insensitive entry). Keeps the dictionary lean automatically.
+    """
+    frm = (frm or "").strip()
+    to = (to or "").strip()
+    if not frm or not to:
+        return False, "empty"
+    if frm == to:
+        return False, "no_change"
+    if frm.casefold() == to.casefold():
+        return False, "case_only"  # cosmetic capitalization — no real benefit
+    corrected, _ = _apply_map(frm)
+    if corrected.strip() == to:
+        return False, "already_covered"  # existing entry already fixes this
+    return True, "ok"
 
 
 def correct_transcript(text: str, *, source: str = "dict", use_ai: bool = True) -> tuple[str, list[dict]]:

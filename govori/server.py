@@ -351,10 +351,11 @@ async def review_action(request: Request) -> JSONResponse:
     if body.get("remove"):
         remove_correction(body["remove"])
         return JSONResponse({"ok": True})
+    added, reason = True, "added"
     if body.get("accept"):
-        accept_correction(body.get("from", ""), body.get("to", ""))
+        added, reason = accept_correction(body.get("from", ""), body.get("to", ""))
     mark_reviewed(body.get("ts", ""))
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "added": added, "reason": reason})
 
 
 @app.post("/dict-test")
