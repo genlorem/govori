@@ -1,0 +1,5 @@
+pytest>=7.0
+pytest-asyncio>=0.21
+pytest-playwright>=0.4
+httpx>=0.24
+soundfile>=0.12
