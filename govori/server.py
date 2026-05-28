@@ -223,7 +223,7 @@ app = FastAPI(title="govori-relay", lifespan=lifespan)
 # open within the tailnet. /health is always open (for Traefik/uptime checks).
 # Token accepted as header `X-Govori-Token` or query `?token=`.
 # ---------------------------------------------------------------------------
-_OPEN_PATHS = {"/health", "/review/icon.png", "/lemonsqueezy/webhook", "/setup"}
+_OPEN_PATHS = {"/", "/health", "/review/icon.png", "/lemonsqueezy/webhook", "/setup"}
 # Owner pages — only the master token may reach them (customers can't).
 _OWNER_PREFIXES = ("/review",)
 
@@ -299,6 +299,13 @@ async def lemonsqueezy_webhook(request: Request) -> JSONResponse:
         logger.warning("LS webhook bad json: {} | len={} raw[:120]={!r}", exc, len(raw), raw[:120])
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
     return JSONResponse(ls.handle(payload))
+
+
+@app.get("/", response_class=HTMLResponse)
+async def landing_page() -> HTMLResponse:
+    from govori.landing import render_landing  # noqa: PLC0415
+
+    return HTMLResponse(render_landing())
 
 
 @app.get("/setup", response_class=HTMLResponse)

@@ -2,6 +2,42 @@
 
 Non-obvious находки по проекту. Растёт со временем; самые свежие сверху.
 
+## 2026-05-28 — Монетизация, нативные клиенты (iOS/Android), тесты/CI, headless-сборка
+
+### iOS Shortcuts: GUI-сборка РАБОТАЕТ и нужна как первый шаг; тупик — только программная генерация plist
+**Контекст:** диктовка «голос → текст под курсор» на iPhone.
+**Находка (уточнено пользователем):** шорткат, **собранный руками в приложении «Команды» по инструкции, заработал отлично** — это быстрый валидный первый шаг: проверяет весь backend-пайплайн (relay, токены, коррекция, plain-text ответ) БЕЗ нативного приложения, Apple Developer аккаунта и сборки. **НЕ исключать этот шаг.** Тупиком оказался не Shortcuts, а **попытка генерить `.shortcut` plist программно** — там magic-variable wiring ломается молча, iOS 17+ требует подписи, Mac-CLI не тестит. То есть: шорткат собирает ПОЛЬЗОВАТЕЛЬ в GUI (надёжно), я даю пошаговую инструкцию — а не генерю plist.
+**Ограничения Shortcuts (почему ДАЛЕЕ нужен нативный клиент, но не вместо первого шага):** вставка под курсор в чужое приложение шорткатом невозможна (только буфер + ручная вставка); per-customer лицензии не масштабируются. Это для ПРОДАЖ.
+**Как применить — последовательность:** (1) **GUI-собранный Shortcut** — быстрая валидация пайплайна + личное/раннее использование (делаю инструкцию, не plist); (2) **нативная клавиатура** (iOS extension / Android IME) — для продаваемого продукта со вставкой под курсор. Relay переиспользуется всеми клиентами.
+
+### Хендкрафт .shortcut plist — magic-variable wiring ломается молча
+**Находка:** `WFInput`/значения действий требуют **WFTextTokenString с attachment-at-range** (placeholder `￼` + `attachmentsByRange {"{0, 1}": {OutputUUID,Type:ActionOutput,OutputName}}`), а НЕ голый `WFTokenAttachment` (тот молча сбрасывается → серый placeholder, пустое значение). `WFDictionaryKey` тоже token-string. `body=File` в сгенерённом plist слал пустое тело. Mac-CLI `shortcuts run` НЕ выполняет надёжно POST-шорткаты (sandbox). Импорт на маке: `open -a Shortcuts file` → клик «Add» через `AXRaise of window "" + key code 36` (нужно Accessibility-разрешение).
+**Как применить:** не хендкрафтить сложные plist. Сервер с `?text=1`→plain-text + авто-chaining (действие без `WFInput` берёт выход предыдущего) убирает почти все magic-variable.
+
+### Headless-сборка Android APK на маке (без Android Studio)
+**Находка:** `brew install openjdk@17` (НЕ новее — openjdk@26 несовместим с AGP 8.4); cask `android-commandlinetools` (без дефиса!); `yes | sdkmanager --licenses`; `sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"`; `local.properties` с `sdk.dir`. **Системный gradle (brew 9.x) НЕ генерит wrapper для AGP-8.4-проекта** — качать gradle 8.7 binary напрямую и собирать им; `gradle wrapper` сработает только ПОСЛЕ конфигурации проекта 8.7. Debug APK сайдлоадится без Google Play. Подробности → [[reference_android_headless_build]].
+
+### Типовые баги Android-скаффолда (Codex blind-gen)
+**Находка:** (1) `settings.gradle.kts` дублирует version-catalog `from(...)` — gradle авто-грузит `libs`, убрать блок; (2) нет `gradle.properties` с `android.useAndroidX=true`; (3) `Theme.Material.NoTitleBar` не существует → `NoActionBar`; (4) `switchToNextInputMethod(token,..)` нет такой сигнатуры → `showInputMethodPicker()`; (5) `Throwable.cause` нужен `override val cause: Throwable?`.
+
+### pytest на CI: `pytest` ≠ `python -m pytest`
+**Находка:** консольный `pytest` НЕ добавляет cwd в `sys.path` (`ModuleNotFoundError`), а `python -m pytest` добавляет — локальный прогон обманывал. Фикс — `pytest.ini` с `pythonpath = .`. → [[reference_pytest_pythonpath]].
+
+### Dokploy/Traefik — маршрут на хост-сервис + форс ACME
+**Находка:** dynamic-конфиги `/etc/dokploy/traefik/dynamic/*.yml`; маршрут на хост через `http://172.17.0.1:PORT`, `certResolver: letsencrypt`. Traefik **не переповторяет ACME** после провала — форсить явным `tls.domains` (реальное изменение файла → reload). systemd **user**-unit: убрать `User=` (иначе exit 216/GROUP); `EnvironmentFile` не принимает `export KEY=val`. Релей бинить `0.0.0.0` чтоб docker-Traefik достал. → [[reference_dokploy_traefik]].
+
+### Lemon Squeezy — API vs дашборд
+**Находка:** **продукты/цены только в дашборде** (API не умеет), **webhooks через API**. License Keys `activation_limit=1` = нативная привязка. Signing secret ≠ API-ключ. Query-фильтры урл-энкодить (`filter%5Bstore_id%5D`). ⚠️ Apple IAP / Play Billing могут требовать свой биллинг для in-app подписок — вопрос открыт для стора-версий.
+
+### Codex-скаффолды требуют fix-up пасса
+**Находка:** Codex пишет быстро/добротно, но не компилит/не тестит → остаются ошибки уровня компиляции (5 в Android, контракт save_or_merge_note, `import json` пропущен). → [[feedback_codex_scaffold_fixup]].
+
+### Whisper prompt — лимит 224 токена
+**Находка:** Whisper читает только ~последние 224 токена `prompt` — переполненный словарь частично игнорируется. Доменный словарь → в пост-обработку (детерм. карта + Haiku), в whisper_prompt — тесное ядро.
+
+### Секреты через Google Drive MCP
+**Находка:** `read_file_content` возвращает markdown-escaped (`\_`) — убирать `\` (`tr -d '\\'`). MCP умеет только create+read, не delete — «затирать» пользователь сам. gh-токен может протухнуть молча: метаданные отвечают, а скачивание логов/артефактов даёт 401 — лечится `gh auth login`.
+
 ## 2026-04-23 — fn-down/fn-up race condition + Whisper hallucination filter + launchagent debugging
 
 ### fn-down/fn-up race: state mutation должен быть в callback, а не в thread
