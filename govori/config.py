@@ -23,6 +23,8 @@ class GovoriConfig(BaseModel):
     language: str = Field(default="ru", pattern=r"^(en|ru)$")
     model: str = Field(default="whisper-large-v3-turbo")
     note_model: Optional[str] = Field(default="whisper-large-v3")
+    note_relay_url: Optional[str] = Field(default=None)
+    note_relay_token: Optional[str] = Field(default=None)
     sample_rate: int = Field(default=16000, ge=8000, le=48000)
     whisper_prompt: str = Field(default="")
     base_url: Optional[str] = Field(default=None)

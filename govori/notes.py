@@ -1,6 +1,7 @@
 """Note classification, persistence, merge checks, and note-mode pipeline."""
 from __future__ import annotations
 import datetime
+import io
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 import av
+import httpx
 import numpy as np
 from loguru import logger
 try:
@@ -71,9 +73,69 @@ def _save_note_audio_background(audio, duration_sec):
     except Exception as e:
         logger.warning(f'audio-save failed (non-fatal): {e}')
 
+def _post_note_to_relay(audio, duration_sec) -> bool:
+    """Send note-mode audio to the relay for full remote processing."""
+    try:
+        base = cfg.CONFIG.note_relay_url if cfg.CONFIG else None
+        if not base:
+            logger.error('note relay url not configured')
+            return False
+        endpoint = base.rstrip('/')
+        if not endpoint.endswith('/note'):
+            endpoint = f'{endpoint}/note'
+
+        token = cfg.CONFIG.note_relay_token if cfg.CONFIG else None
+        token = token or os.environ.get('GOVORI_TOKEN')
+        if not token:
+            logger.error('note relay token not configured')
+            return False
+
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        audio_n = audio / peak * 0.9 if peak > 0 else audio
+        audio_int16 = (audio_n * 32767).astype(np.int16)
+        buf = io.BytesIO()
+        container = av.open(buf, mode='w', format='ogg')
+        stream = container.add_stream('libopus', rate=cfg.SAMPLE_RATE, layout='mono')
+        stream.bit_rate = 32000
+        frame = av.AudioFrame.from_ndarray(audio_int16.reshape(1, -1), format='s16', layout='mono')
+        frame.rate = cfg.SAMPLE_RATE
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+        container.close()
+        buf.seek(0)
+
+        resp = httpx.post(
+            endpoint,
+            params={'text': '1'},
+            files={'audio': ('note.ogg', buf, 'audio/ogg')},
+            headers={'X-Govori-Token': token},
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            logger.error(f'note relay failed: HTTP {resp.status_code} {resp.text[:500]}')
+            return False
+        data = resp.json()
+        if not data.get('ok'):
+            logger.error(f'note relay rejected response: {data}')
+            return False
+        return True
+    except Exception as e:
+        logger.exception(f'note relay failed: {e}')
+        return False
+
 def _note_pipeline_background(audio, duration_sec):
     """Full note pipeline: transcribe -> filter -> classify -> save. No HUD updates."""
     threading.Thread(target=lambda a=audio, d=duration_sec: _save_note_audio_background(a, d), daemon=True).start()
+    if cfg.CONFIG and cfg.CONFIG.note_relay_url:
+        ok = _post_note_to_relay(audio, duration_sec)
+        if ok:
+            logger.success('note → relay OK')
+            return
+        stash_retry_buffer([audio], {'note_mode': True, 'predict_mode': False, 'auto_send': False, 'duration': duration_sec})
+        set_hud(True, mode='error_retryable', tooltip=_tooltip('api_network'))
+        return
     text = transcribe_with_fallback(audio, duration_sec, model_override=cfg.CONFIG.note_model)
     if text is PERMANENT_API_ERROR:
         set_hud(True, mode='error_fatal', tooltip=_tooltip('api_network'))
