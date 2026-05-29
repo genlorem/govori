@@ -675,6 +675,10 @@ async def note_endpoint(request: Request) -> JSONResponse:
         confidence = meta.get("confidence", "high")
         confirm = 0 if confidence == "high" else 1
         if wants_text_stage:
+            # ?field=confirm → plain "1"/"0" for the shortcut's If gate (no JSON
+            # parsing on the phone). Otherwise the human-readable category line.
+            if request.query_params.get("field") == "confirm":
+                return PlainTextResponse(str(confirm))
             return PlainTextResponse(line)
         return JSONResponse(
             {
