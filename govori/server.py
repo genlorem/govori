@@ -199,6 +199,29 @@ def _intent_line(intent: str, summary: str | None) -> str:
     return f"{emoji} {intent_ru}: {summary or 'note'}"
 
 
+def _normalize_intent(raw: str | None, cached_meta: dict) -> str | None:
+    """Map a phone-menu choice to a canonical intent (note/ask/do).
+
+    Accepts canonical codes, Russian menu labels (with optional emoji, e.g.
+    "🔍 Вопрос"), and an "accept"/"принять"/empty value meaning "use the
+    auto-detected intent". Returns None if unrecognised (→ caller 400s).
+    """
+    if not raw or not raw.strip():
+        return cached_meta.get("intent") or "note"
+    low = raw.strip().lower()
+    if "принят" in low or low in ("accept", "✓"):
+        return cached_meta.get("intent") or "note"
+    if low in _INTENT_LINE_RU:
+        return low
+    if "вопрос" in low or "ask" in low:
+        return "ask"
+    if "команд" in low or "действ" in low or low == "do":
+        return "do"
+    if "заметк" in low or "note" in low:
+        return "note"
+    return None
+
+
 async def _transcribe_correct_note_request(request: Request) -> tuple[str, float, int]:
     file_bytes, src = await _extract_audio_bytes(request)
     logger.debug("/note received {} bytes source={}", len(file_bytes), src)
@@ -637,7 +660,7 @@ async def note_endpoint(request: Request) -> JSONResponse:
         text = cached["text"]
         duration = cached["duration"]
         cached_meta = cached.get("meta") or {}
-        intent = request.query_params.get("intent") or cached_meta.get("intent") or "note"
+        intent = _normalize_intent(request.query_params.get("intent"), cached_meta)
         if intent not in _INTENT_LINE_RU:
             return JSONResponse({"ok": False, "reason": "bad_intent"}, status_code=400)
 
