@@ -41,6 +41,7 @@ _uptime_start: float = 0.0
 _bound_host: str | None = None
 _INTENT_CACHE_TTL_SEC = 300.0
 _intent_cache: dict[str, dict] = {}
+_last_classification: dict[str, dict] = {}
 _intent_cache_lock = threading.Lock()
 
 
@@ -183,6 +184,38 @@ def _get_intent_cache(token: str | None) -> dict | None:
             return None
         if now - item.get("timestamp", 0.0) > _INTENT_CACHE_TTL_SEC:
             _intent_cache.pop(token, None)
+            return None
+        return dict(item)
+
+
+def _store_last_classification(auth_token: str | None, text: str, duration: float, meta: dict) -> None:
+    """Remember this device's most recent classify, keyed by its static auth token.
+
+    Lets the execute call omit a per-request token: the shortcut sends only its
+    static access token, and we resolve the last classification for it.
+    """
+    if not auth_token:
+        return
+    now = time.monotonic()
+    with _intent_cache_lock:
+        _last_classification[auth_token] = {
+            "timestamp": now,
+            "text": text,
+            "duration": duration,
+            "meta": meta,
+        }
+
+
+def _get_last_classification(auth_token: str | None) -> dict | None:
+    if not auth_token:
+        return None
+    now = time.monotonic()
+    with _intent_cache_lock:
+        item = _last_classification.get(auth_token)
+        if item is None:
+            return None
+        if now - item.get("timestamp", 0.0) > _INTENT_CACHE_TTL_SEC:
+            _last_classification.pop(auth_token, None)
             return None
         return dict(item)
 
@@ -623,6 +656,10 @@ async def note_endpoint(request: Request) -> JSONResponse:
 
         meta = intents.classify_intent(text)
         token = _store_intent_cache(text, duration, meta)
+        _store_last_classification(
+            request.headers.get("x-govori-token") or request.query_params.get("token"),
+            text, duration, meta,
+        )
         intent = meta.get("intent", "note")
         summary = meta.get("summary") or meta.get("title") or "note"
         line = _intent_line(intent, summary)
@@ -659,6 +696,10 @@ async def note_endpoint(request: Request) -> JSONResponse:
 
     if stage == "execute":
         cached = _get_intent_cache(request.query_params.get("token"))
+        if cached is None:
+            cached = _get_last_classification(
+                request.headers.get("x-govori-token") or request.query_params.get("token")
+            )
         if cached is None:
             return JSONResponse({"ok": False, "reason": "token_expired"}, status_code=410)
         text = cached["text"]
