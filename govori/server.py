@@ -5,7 +5,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -37,6 +39,9 @@ logger.add(str(_log_file), rotation="10 MB", retention=5, level="DEBUG")
 # ---------------------------------------------------------------------------
 _uptime_start: float = 0.0
 _bound_host: str | None = None
+_INTENT_CACHE_TTL_SEC = 300.0
+_intent_cache: dict[str, dict] = {}
+_intent_cache_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +151,97 @@ def _check_audio_quality(audio: np.ndarray, duration_sec: float) -> None:
         )
 
 
+def _evict_intent_cache_locked(now: float) -> None:
+    expired = [token for token, item in _intent_cache.items()
+               if now - item.get("timestamp", 0.0) > _INTENT_CACHE_TTL_SEC]
+    for token in expired:
+        _intent_cache.pop(token, None)
+
+
+def _store_intent_cache(text: str, duration: float, meta: dict) -> str:
+    token = uuid.uuid4().hex
+    now = time.monotonic()
+    with _intent_cache_lock:
+        _evict_intent_cache_locked(now)
+        _intent_cache[token] = {
+            "timestamp": now,
+            "text": text,
+            "duration": duration,
+            "meta": meta,
+        }
+    return token
+
+
+def _get_intent_cache(token: str | None) -> dict | None:
+    if not token:
+        return None
+    now = time.monotonic()
+    with _intent_cache_lock:
+        _evict_intent_cache_locked(now)
+        item = _intent_cache.get(token)
+        if item is None:
+            return None
+        if now - item.get("timestamp", 0.0) > _INTENT_CACHE_TTL_SEC:
+            _intent_cache.pop(token, None)
+            return None
+        return dict(item)
+
+
+_INTENT_LINE_RU = {
+    "note": ("📝", "Заметка"),
+    "ask": ("🔍", "Вопрос"),
+    "do": ("⚡", "Команда"),
+}
+
+
+def _intent_line(intent: str, summary: str | None) -> str:
+    emoji, intent_ru = _INTENT_LINE_RU.get(intent, _INTENT_LINE_RU["note"])
+    return f"{emoji} {intent_ru}: {summary or 'note'}"
+
+
+async def _transcribe_correct_note_request(request: Request) -> tuple[str, float, int]:
+    file_bytes, src = await _extract_audio_bytes(request)
+    logger.debug("/note received {} bytes source={}", len(file_bytes), src)
+
+    arr, duration = _decode_audio(file_bytes)
+    _check_audio_quality(arr, duration)
+
+    from govori.state import PERMANENT_API_ERROR  # noqa: PLC0415
+    from govori.transcribe import transcribe_with_fallback  # noqa: PLC0415
+
+    note_model = getattr(cfg.CONFIG, "note_model", None)
+    text = transcribe_with_fallback(arr, duration, model_override=note_model)
+    if text is PERMANENT_API_ERROR or text is None:
+        logger.error("/note transcribe_failed")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "ok": False,
+                "error": "Transcription failed",
+                "reason": "transcribe_failed",
+            },
+        )
+
+    from govori.notes import _is_hallucination  # noqa: PLC0415
+
+    if not text or not text.strip() or _is_hallucination(text):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "error": "Hallucination or empty result",
+                "reason": "hallucination",
+            },
+        )
+
+    # Layer 1: glossary post-correction before classify+save. Notes run in the
+    # background, so always use the full Haiku pass (latency is not user-facing).
+    from govori.correct import correct_transcript  # noqa: PLC0415
+
+    text, _edits = correct_transcript(text, source="note", use_ai=True)
+    return text, duration, len(file_bytes)
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -235,6 +331,13 @@ async def _auth(request: Request, call_next):
         return await call_next(request)
 
     master = os.environ.get("GOVORI_TOKEN")
+
+    # In the two-stage note flow, ?token= is the short-lived intent-cache token,
+    # not the relay auth token. The endpoint validates it and returns 410 if it
+    # is missing or expired; stage=classify still goes through normal auth.
+    if path == "/note" and request.query_params.get("stage") == "execute" and not request.headers.get("x-govori-token"):
+        return await call_next(request)
+
     sent = request.headers.get("x-govori-token") or request.query_params.get("token")
 
     # No auth configured at all → open (Tailscale-only dev mode).
@@ -488,6 +591,95 @@ async def dict_endpoint(request: Request, background_tasks: BackgroundTasks) -> 
 @app.post("/note")
 async def note_endpoint(request: Request) -> JSONResponse:
     t0 = time.monotonic()
+    stage = request.query_params.get("stage")
+    wants_text_stage = bool(request.query_params.get("text"))
+
+    if stage == "classify":
+        text, duration, size = await _transcribe_correct_note_request(request)
+        from govori import intents  # noqa: PLC0415
+
+        meta = intents.classify_intent(text)
+        token = _store_intent_cache(text, duration, meta)
+        intent = meta.get("intent", "note")
+        summary = meta.get("summary") or meta.get("title") or "note"
+        line = _intent_line(intent, summary)
+        latency = (time.monotonic() - t0) * 1000
+        logger.info(
+            "/note stage=classify size={}B dur={:.2f}s latency={:.0f}ms -> intent={} target={}",
+            size,
+            duration,
+            latency,
+            intent,
+            meta.get("target"),
+        )
+        if wants_text_stage:
+            return PlainTextResponse(line)
+        return JSONResponse(
+            {
+                "ok": True,
+                "stage": "classify",
+                "token": token,
+                "intent": intent,
+                "target": meta.get("target"),
+                "contexts": meta.get("contexts"),
+                "note_kind": meta.get("type"),
+                "urgency": meta.get("urgency"),
+                "summary": summary,
+                "title": meta.get("title"),
+                "line": line,
+            }
+        )
+
+    if stage == "execute":
+        cached = _get_intent_cache(request.query_params.get("token"))
+        if cached is None:
+            return JSONResponse({"ok": False, "reason": "token_expired"}, status_code=410)
+        text = cached["text"]
+        duration = cached["duration"]
+        cached_meta = cached.get("meta") or {}
+        intent = request.query_params.get("intent") or cached_meta.get("intent") or "note"
+        if intent not in _INTENT_LINE_RU:
+            return JSONResponse({"ok": False, "reason": "bad_intent"}, status_code=400)
+
+        from govori import intents  # noqa: PLC0415
+
+        if intent == "note":
+            from govori.notes import save_or_merge_note  # noqa: PLC0415
+
+            try:
+                result = save_or_merge_note(text, duration)
+            except Exception as exc:
+                logger.exception("/note stage=execute save_failed: {}", exc)
+                raise HTTPException(
+                    status_code=500,
+                    detail={"ok": False, "error": str(exc), "reason": "save_failed"},
+                ) from exc
+            if not result:
+                raise HTTPException(
+                    status_code=500,
+                    detail={"ok": False, "error": "save_or_merge_note returned None", "reason": "save_failed"},
+                )
+            result_meta = result.get("meta") or {}
+            title = result_meta.get("title") or cached_meta.get("title") or "note"
+            line = f"✓ сохранено: {title}"
+            if wants_text_stage:
+                return PlainTextResponse(line)
+            return JSONResponse({"ok": True, "stage": "execute", "intent": "note", "line": line})
+
+        if intent == "ask":
+            answer = intents.brain_answer(text)
+            if wants_text_stage:
+                return PlainTextResponse(answer)
+            return JSONResponse({"ok": True, "stage": "execute", "intent": "ask", "answer": answer})
+
+        answer = intents.dispatch_command(text, cached_meta.get("target"))
+        if wants_text_stage:
+            return PlainTextResponse(answer)
+        return JSONResponse({"ok": True, "stage": "execute", "intent": "do", "answer": answer})
+
+    if stage is not None:
+        return JSONResponse({"ok": False, "reason": "bad_stage"}, status_code=400)
+
     file_bytes, src = await _extract_audio_bytes(request)
     logger.debug("/note received {} bytes source={}", len(file_bytes), src)
 
