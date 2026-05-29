@@ -24,6 +24,7 @@ def _default_meta(base: dict) -> dict:
     meta.setdefault('intent', 'note')
     meta.setdefault('target', None)
     meta.setdefault('summary', meta.get('title') or 'note')
+    meta.setdefault('confidence', 'high')
     return meta
 
 
@@ -54,7 +55,7 @@ def classify_intent(text: str) -> dict:
 
 Сначала уже была выполнена классификация заметки. Не повторяй её. Твоя задача:
 определить намерение пользователя и вернуть STRICT JSON ONLY:
-{{"intent": "note|ask|do", "target": "<one context key or null>", "summary": "<short human RU one-liner, max 90 chars>"}}
+{{"intent": "note|ask|do", "target": "<one context key or null>", "summary": "<short human RU one-liner, max 90 chars>", "confidence": "high|low"}}
 
 Контексты пользователя, используй target только из этих ключей:
 {cfg.NOTES_CFG['contexts_desc']}
@@ -66,6 +67,7 @@ def classify_intent(text: str) -> dict:
   "сделай", "отправь", "напиши письмо", "поставь задачу", "собери отчёт",
   "напомни <кому-то>", "запроси".
 - note: идеи, наблюдения, личные todo, решения и обычные заметки.
+- confidence: "high" если тип однозначен; "low" только при реальных сомнениях — текст двусмысленный, обрывочный, или подходит под 2+ типа (тогда телефон спросит подтверждение). Не ставь "low" без веской причины.
 
 target должен быть одним ключом из списка или null. summary — коротко по-русски, до 90 символов.
 Верни только валидный JSON, без markdown и пояснений."""
@@ -94,15 +96,20 @@ target должен быть одним ключом из списка или nu
         summary = str(data.get('summary') or meta.get('title') or 'note').strip()
         if len(summary) > 90:
             summary = summary[:87].rstrip() + '...'
+        confidence = data.get('confidence') if isinstance(data, dict) else None
+        if confidence not in ('high', 'low'):
+            confidence = 'high'
         meta['intent'] = intent
         meta['target'] = target
         meta['summary'] = summary
+        meta['confidence'] = confidence
         return meta
     except Exception as exc:
         logger.info(f'intent classify error: {exc}')
         meta['intent'] = 'note'
         meta['target'] = None
         meta['summary'] = meta.get('summary') or meta.get('title') or 'note'
+        meta['confidence'] = 'high'
         return meta
 
 

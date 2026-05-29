@@ -635,6 +635,8 @@ async def note_endpoint(request: Request) -> JSONResponse:
             intent,
             meta.get("target"),
         )
+        confidence = meta.get("confidence", "high")
+        confirm = 0 if confidence == "high" else 1
         if wants_text_stage:
             return PlainTextResponse(line)
         return JSONResponse(
@@ -649,6 +651,8 @@ async def note_endpoint(request: Request) -> JSONResponse:
                 "urgency": meta.get("urgency"),
                 "summary": summary,
                 "title": meta.get("title"),
+                "confidence": confidence,
+                "confirm": confirm,
                 "line": line,
             }
         )
