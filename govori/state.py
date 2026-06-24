@@ -35,6 +35,7 @@ class AppState:
     health_monitor_owns_hud: bool = False
     shutdown_requested: bool = False
     fn_release_ts: float = 0.0  # PERF-01: timestamp set by hotkey on fn-up, consumed by audio.stop_and_transcribe for the fn_release_to_stop span
+    encoder: Any = None  # ParallelEncoder instance during recording; None otherwise
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
@@ -59,17 +60,19 @@ def begin_recording(*, predict: bool, note: bool, auto_send: bool) -> bool:
 
 
 def request_cancel():
-    """Cancel active work and return the audio stream snapshot for outside-lock close."""
+    """Cancel active work; return (stream, encoder) snapshots for outside-lock cleanup."""
     with state.lock:
         stream = state.audio_stream
         state.audio_stream = None
+        encoder = state.encoder
+        state.encoder = None
         state.cancelled = True
         state.recording = False
         state.transcribing = False
         state.predict_mode = False
         state.note_mode = False
         state.audio_chunks = []
-        return stream
+        return stream, encoder
 
 
 def stash_retry_buffer(audio_chunks_copy: list, mode: dict) -> None:

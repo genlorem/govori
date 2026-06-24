@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import os
+import queue as _queue
 import re
 import threading
 import time
@@ -140,6 +141,121 @@ def _timeout_for_duration(duration_sec: float) -> float:
     return 30.0
 
 
+class ParallelEncoder:
+    """Encodes audio chunks to OGG/Opus in a background thread while recording.
+
+    Feed raw float32 mono chunks via feed(); call flush() on fn-release to
+    finalize and get the BytesIO ready for the API. On cancel, call discard().
+
+    state.audio_chunks still receives raw chunks for the retry path.
+    """
+
+    _MAX_QUEUE_SECONDS = 60
+
+    def __init__(self):
+        self._q: _queue.Queue = _queue.Queue(maxsize=self._MAX_QUEUE_SECONDS * 50)  # ~50 chunks/s upper bound
+        self._buf = io.BytesIO()
+        self._buf.name = "audio.ogg"
+        self._container = av.open(self._buf, mode="w", format="ogg")
+        self._av_stream = self._container.add_stream("libopus", rate=cfg.SAMPLE_RATE, layout="mono")
+        self._pts = 0
+        self._result: Optional[io.BytesIO] = None
+        self._error: Optional[Exception] = None
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def feed(self, chunk: "np.ndarray") -> None:
+        """Called from audio_callback with a copy of the raw float32 chunk."""
+        try:
+            self._q.put_nowait(chunk)
+        except _queue.Full:
+            logger.warning("ParallelEncoder queue full — dropping chunk (recording > 60s)")
+
+    def _encode_chunk(self, chunk: "np.ndarray") -> None:
+        flat = chunk.flatten()
+        audio_int16 = (flat * 32767).astype(np.int16)
+        frame = av.AudioFrame.from_ndarray(audio_int16.reshape(1, -1), format="s16", layout="mono")
+        frame.rate = cfg.SAMPLE_RATE
+        frame.pts = self._pts
+        self._pts += len(flat)
+        for packet in self._av_stream.encode(frame):
+            self._container.mux(packet)
+
+    def _run(self) -> None:
+        try:
+            while True:
+                chunk = self._q.get()
+                if chunk is None:
+                    break
+                self._encode_chunk(chunk)
+            for packet in self._av_stream.encode(None):
+                self._container.mux(packet)
+            self._container.close()
+            self._buf.seek(0)
+            self._result = self._buf
+        except Exception as e:
+            self._error = e
+            logger.warning(f"ParallelEncoder error: {e}")
+        finally:
+            self._done.set()
+
+    def flush(self, timeout: float = 5.0) -> Optional[io.BytesIO]:
+        """Signal end-of-stream, wait for encoder thread, return encoded BytesIO or None on error."""
+        self._q.put(None)
+        self._done.wait(timeout=timeout)
+        if self._error or not self._done.is_set():
+            return None
+        return self._result
+
+    def discard(self) -> None:
+        """Non-blocking cancel: drain queue and send sentinel."""
+        while True:
+            try:
+                self._q.get_nowait()
+            except _queue.Empty:
+                break
+        try:
+            self._q.put_nowait(None)
+        except _queue.Full:
+            pass
+
+
+def _call_transcription_api(client: OpenAI, model: str, buf: io.BytesIO, timeout: float = 30.0):
+    """POST a pre-encoded BytesIO buffer to the Whisper API.
+
+    Returns: text (str), None (transient failure), or PERMANENT_API_ERROR.
+    """
+    try:
+        with span("api_call", model=model):
+            result = client.with_options(timeout=timeout, max_retries=0).audio.transcriptions.create(
+                model=model, file=buf, language=cfg.LANGUAGE, temperature=0, prompt=cfg.WHISPER_PROMPT,
+            )
+        return result.text.strip()
+    except openai.APITimeoutError:
+        logger.info(f"! Transcription timed out ({timeout}s)")
+        return None
+    except openai.APIConnectionError as e:
+        logger.info(f"! Connection error: {e}")
+        return None
+    except openai.APIStatusError as e:
+        if e.status_code >= 500 or e.status_code in (408, 429):
+            logger.info(f"! Server error ({e.status_code})")
+            return None
+        logger.info(f"! API error ({e.status_code}): {e} (permanent — won't retry)")
+        return PERMANENT_API_ERROR
+
+
+def _transcribe_preencoded(client: OpenAI, model: str, buf: io.BytesIO, timeout: float = 30.0):
+    """Transcribe a pre-encoded OGG/Opus BytesIO without re-encoding.
+
+    Thin wrapper around _call_transcription_api for use when ParallelEncoder
+    has already produced the buffer.
+    """
+    buf.seek(0)
+    return _call_transcription_api(client, model, buf, timeout)
+
+
 def _encode_and_transcribe(client: OpenAI, model: str, audio, timeout: float = 30.0):
     """Encode mono float32 audio → OGG/Opus → Whisper.
 
@@ -165,24 +281,7 @@ def _encode_and_transcribe(client: OpenAI, model: str, audio, timeout: float = 3
         container.close()
         buf.seek(0)
 
-    try:
-        with span("api_call", model=model):
-            result = client.with_options(timeout=timeout, max_retries=0).audio.transcriptions.create(
-                model=model, file=buf, language=cfg.LANGUAGE, temperature=0, prompt=cfg.WHISPER_PROMPT,
-            )
-        return result.text.strip()
-    except openai.APITimeoutError:
-        logger.info(f"! Transcription timed out ({timeout}s)")
-        return None
-    except openai.APIConnectionError as e:
-        logger.info(f"! Connection error: {e}")
-        return None
-    except openai.APIStatusError as e:
-        if e.status_code >= 500 or e.status_code in (408, 429):
-            logger.info(f"! Server error ({e.status_code})")
-            return None
-        logger.info(f"! API error ({e.status_code}): {e} (permanent — won't retry)")
-        return PERMANENT_API_ERROR
+    return _call_transcription_api(client, model, buf, timeout)
 
 
 def _try_transcribe(
@@ -193,8 +292,14 @@ def _try_transcribe(
     on_progress: Optional[Callable] = None,
     max_retries: int = 2,
     model_override: Optional[str] = None,
+    pre_encoded: Optional[io.BytesIO] = None,
 ):
     """One initial attempt + up to max_retries auto-retries against a single provider.
+
+    If `pre_encoded` is provided (a BytesIO from ParallelEncoder.flush()), the first
+    attempt skips re-encoding and calls _transcribe_preencoded directly. Retry attempts
+    always fall back to _encode_and_transcribe (raw audio re-encode) since the pre-encoded
+    buffer is a one-shot stream.
 
     Returns text | None (transient terminal failure) | PERMANENT_API_ERROR.
     """
@@ -206,9 +311,14 @@ def _try_transcribe(
     for attempt in range(1, total_attempts + 1):
         result = {"text": None, "done": False}
 
-        def _do():
+        use_pre_encoded = pre_encoded is not None and attempt == 1
+
+        def _do(use_pre=use_pre_encoded):
             try:
-                result["text"] = _encode_and_transcribe(client, model, audio, timeout=timeout)
+                if use_pre:
+                    result["text"] = _transcribe_preencoded(client, model, pre_encoded, timeout=timeout)
+                else:
+                    result["text"] = _encode_and_transcribe(client, model, audio, timeout=timeout)
             finally:
                 result["done"] = True
 
@@ -231,12 +341,16 @@ def _try_transcribe(
 
 
 def transcribe_with_fallback(audio, duration_sec, *, on_progress: Optional[Callable] = None,
-                              model_override: Optional[str] = None):
+                              model_override: Optional[str] = None,
+                              pre_encoded: Optional[io.BytesIO] = None):
     """Primary (Groq) with full retry budget. On transient terminal failure,
     try OpenAI once if OPENAI_API_KEY is set.
 
     `model_override` substitutes the primary provider's model only (e.g. notes
     use full `whisper-large-v3` instead of turbo). Fallback keeps its own model.
+
+    `pre_encoded` is an OGG/Opus BytesIO from ParallelEncoder.flush(); when
+    provided, the first attempt to the primary provider skips re-encoding.
 
     Returns: text | None | PERMANENT_API_ERROR.
     """
@@ -249,7 +363,7 @@ def transcribe_with_fallback(audio, duration_sec, *, on_progress: Optional[Calla
     with span("provider_primary", provider=primary.name):
         text = _try_transcribe(primary, primary_client, audio, duration_sec,
                                on_progress=on_progress, max_retries=2,
-                               model_override=model_override)
+                               model_override=model_override, pre_encoded=pre_encoded)
 
     if text is PERMANENT_API_ERROR:
         logger.warning(f"Primary {primary.name}: permanent error — no fallback")

@@ -28,6 +28,8 @@ def audio_callback(indata, frames, time_info, status):
     with state.lock:
         if state.recording:
             state.audio_chunks.append(indata.copy())
+            if state.encoder is not None:
+                state.encoder.feed(indata.copy())
 
 
 def _start_mic_stream():
@@ -62,13 +64,19 @@ def _start_mic_stream():
         logger.error(f"Mic error: {e}")
         return
 
+    # Create ParallelEncoder outside the lock (starts a thread), then assign under lock.
+    from .transcribe import ParallelEncoder
+    encoder = ParallelEncoder()
+
     with state.lock:
         if not state.recording or state.cancelled:
             close_now = True
         else:
             state.audio_stream = stream
+            state.encoder = encoder
             close_now = False
     if close_now:
+        encoder.discard()
         try:
             stream.stop()
             stream.close()
@@ -117,6 +125,8 @@ def stop_and_transcribe():
             state.recording = False
             stream = state.audio_stream
             state.audio_stream = None
+            encoder = state.encoder
+            state.encoder = None
             cancelled = state.cancelled
             chunks_snapshot = list(state.audio_chunks)
             note_mode = state.note_mode
@@ -131,6 +141,8 @@ def stop_and_transcribe():
                 logger.warning(f"Audio stream close failed: {e}")
 
         if not chunks_snapshot or cancelled:
+            if encoder is not None:
+                encoder.discard()
             set_hud(False)
             return
 
@@ -138,6 +150,8 @@ def stop_and_transcribe():
         duration = total_samples / cfg.SAMPLE_RATE
         logger.debug(f"Recording stats chunks={len(chunks_snapshot)} total_samples={total_samples} dur={duration:.2f}s")
         if duration < 0.5:
+            if encoder is not None:
+                encoder.discard()
             set_hud(False)
             logger.debug("Too short, skipping")
             return
@@ -146,11 +160,15 @@ def stop_and_transcribe():
             audio = np.concatenate(chunks_snapshot, axis=0).flatten()
         rms = np.sqrt(np.mean(audio ** 2))
         if rms < 0.0001:
+            if encoder is not None:
+                encoder.discard()
             set_hud(False)
             logger.debug(f"Silence skipped rms={rms:.4f}")
             return
 
         if note_mode:
+            if encoder is not None:
+                encoder.discard()
             if not cfg.NOTES_CFG:
                 logger.warning("notes plugin not installed - run: govori plugin init notes")
                 set_hud(False)
@@ -175,11 +193,19 @@ def stop_and_transcribe():
         set_hud(True, "transcribing")
         logger.bind(event="rec_stop").info("Transcribing")
 
+        with span("encode_flush"):
+            pre_encoded = encoder.flush() if encoder is not None else None
+        if pre_encoded is not None:
+            logger.debug("Using pre-encoded OGG from ParallelEncoder")
+        else:
+            logger.debug("ParallelEncoder unavailable or failed — will re-encode")
+
         def _show_progress(n, total, sec_left):
             set_hud(True, mode="countdown", count=sec_left)
 
         with span("transcribe_full"):
-            text = t.transcribe_with_fallback(audio, duration, on_progress=_show_progress)
+            text = t.transcribe_with_fallback(audio, duration, on_progress=_show_progress,
+                                              pre_encoded=pre_encoded)
         with state.lock:
             state.transcribing = False
             cancelled = state.cancelled
@@ -244,13 +270,15 @@ def stop_and_transcribe():
 
 
 def cancel_recording(skip_hud=False, quiet=False):
-    stream = request_cancel()
+    stream, encoder = request_cancel()
     if stream is not None:
         try:
             stream.stop()
             stream.close()
         except Exception as e:
             logger.warning(f"Audio stream close failed: {e}")
+    if encoder is not None:
+        encoder.discard()
     if not skip_hud:
         set_hud(False)
     if not quiet:
