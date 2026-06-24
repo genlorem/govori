@@ -69,8 +69,8 @@ def _resolve_bind_host() -> str:
     return "127.0.0.1"
 
 
-def _ogg_duration_sec(data: bytes) -> float:
-    """Read duration from OGG container metadata without full decode."""
+def _container_duration_sec(data: bytes) -> float:
+    """Read duration from any PyAV-readable container (OGG, WebM, MP4, etc.)."""
     try:
         import av  # noqa: PLC0415
         c = av.open(BytesIO(data))
@@ -79,6 +79,18 @@ def _ogg_duration_sec(data: bytes) -> float:
         return dur
     except Exception:
         return 0.0
+
+
+def _is_preencoded(data: bytes) -> bool:
+    """True if data is OGG/Opus or WebM/Opus — can be forwarded to Groq without re-encoding."""
+    return data[:4] == b"OggS" or data[:4] == b"\x1a\x45\xdf\xa3"
+
+
+def _preencoded_filename(data: bytes) -> str:
+    """Return the appropriate filename for a pre-encoded audio buffer."""
+    if data[:4] == b"OggS":
+        return "audio.ogg"
+    return "audio.webm"
 
 
 def _decode_audio(file_bytes: bytes) -> tuple[np.ndarray, float]:
@@ -272,13 +284,13 @@ async def _transcribe_correct_note_request(request: Request) -> tuple[str, float
     logger.debug("/note received {} bytes source={}", len(file_bytes), src)
 
     pre_encoded_buf: BytesIO | None = None
-    if file_bytes[:4] == b"OggS":
-        duration = _ogg_duration_sec(file_bytes)
+    if _is_preencoded(file_bytes):
+        duration = _container_duration_sec(file_bytes)
         if duration >= 0.5:
             pre_encoded_buf = BytesIO(file_bytes)
-            pre_encoded_buf.name = "audio.ogg"
+            pre_encoded_buf.name = _preencoded_filename(file_bytes)
             arr = None
-            logger.debug("/note ogg-fast-path dur={:.2f}s", duration)
+            logger.debug("/note preencoded-fast-path dur={:.2f}s", duration)
         else:
             arr, duration = _decode_audio(file_bytes)
             _check_audio_quality(arr, duration)
@@ -609,15 +621,15 @@ async def dict_endpoint(request: Request, background_tasks: BackgroundTasks) -> 
     file_bytes, src = await _extract_audio_bytes(request)
     logger.debug("/dict received {} bytes source={}", len(file_bytes), src)
 
-    # Fast path: OGG/Opus received directly → skip decode+encode round-trip
+    # Fast path: OGG/Opus or WebM/Opus received directly → skip decode+encode round-trip
     pre_encoded_buf: BytesIO | None = None
-    if file_bytes[:4] == b"OggS":
-        duration = _ogg_duration_sec(file_bytes)
+    if _is_preencoded(file_bytes):
+        duration = _container_duration_sec(file_bytes)
         if duration >= 0.5:
             pre_encoded_buf = BytesIO(file_bytes)
-            pre_encoded_buf.name = "audio.ogg"
+            pre_encoded_buf.name = _preencoded_filename(file_bytes)
             arr = None
-            logger.debug("/dict ogg-fast-path dur={:.2f}s", duration)
+            logger.debug("/dict preencoded-fast-path dur={:.2f}s", duration)
         else:
             arr, duration = _decode_audio(file_bytes)
             _check_audio_quality(arr, duration)

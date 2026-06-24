@@ -69,6 +69,42 @@ def _mock_config(monkeypatch):
     monkeypatch.setattr(cfg, "CONFIG", None, raising=False)
 
 
+# ── _is_preencoded: magic-byte detection ────────────────────────────────────
+
+class TestIsPreencoded:
+    def test_ogg_magic_detected(self):
+        from govori.server import _is_preencoded
+        assert _is_preencoded(b"OggSxxxx") is True
+
+    def test_webm_magic_detected(self):
+        from govori.server import _is_preencoded
+        assert _is_preencoded(b"\x1a\x45\xdf\xa3xxxx") is True
+
+    def test_mp3_not_preencoded(self):
+        from govori.server import _is_preencoded
+        assert _is_preencoded(b"\xff\xfb\x90\x00" + b"\x00" * 4) is False
+
+    def test_wav_not_preencoded(self):
+        from govori.server import _is_preencoded
+        assert _is_preencoded(b"RIFF\x00\x00\x00\x00") is False
+
+    def test_mp4_not_preencoded(self):
+        from govori.server import _is_preencoded
+        assert _is_preencoded(b"\x00\x00\x00\x20ftyp") is False
+
+    def test_empty_not_preencoded(self):
+        from govori.server import _is_preencoded
+        assert _is_preencoded(b"") is False
+
+    def test_preencoded_filename_ogg(self):
+        from govori.server import _preencoded_filename
+        assert _preencoded_filename(b"OggSxxxx") == "audio.ogg"
+
+    def test_preencoded_filename_webm(self):
+        from govori.server import _preencoded_filename
+        assert _preencoded_filename(b"\x1a\x45\xdf\xa3xxxx") == "audio.webm"
+
+
 # ── ParallelEncoder: core behaviour ─────────────────────────────────────────
 
 class TestParallelEncoder:
