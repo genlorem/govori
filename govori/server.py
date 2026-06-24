@@ -69,6 +69,18 @@ def _resolve_bind_host() -> str:
     return "127.0.0.1"
 
 
+def _ogg_duration_sec(data: bytes) -> float:
+    """Read duration from OGG container metadata without full decode."""
+    try:
+        import av  # noqa: PLC0415
+        c = av.open(BytesIO(data))
+        dur = float(c.duration) / 1_000_000 if c.duration and c.duration > 0 else 0.0
+        c.close()
+        return dur
+    except Exception:
+        return 0.0
+
+
 def _decode_audio(file_bytes: bytes) -> tuple[np.ndarray, float]:
     """Decode any audio format → mono float32 numpy array at 16 kHz."""
     import av  # noqa: PLC0415
@@ -259,14 +271,27 @@ async def _transcribe_correct_note_request(request: Request) -> tuple[str, float
     file_bytes, src = await _extract_audio_bytes(request)
     logger.debug("/note received {} bytes source={}", len(file_bytes), src)
 
-    arr, duration = _decode_audio(file_bytes)
-    _check_audio_quality(arr, duration)
+    pre_encoded_buf: BytesIO | None = None
+    if file_bytes[:4] == b"OggS":
+        duration = _ogg_duration_sec(file_bytes)
+        if duration >= 0.5:
+            pre_encoded_buf = BytesIO(file_bytes)
+            pre_encoded_buf.name = "audio.ogg"
+            arr = None
+            logger.debug("/note ogg-fast-path dur={:.2f}s", duration)
+        else:
+            arr, duration = _decode_audio(file_bytes)
+            _check_audio_quality(arr, duration)
+    else:
+        arr, duration = _decode_audio(file_bytes)
+        _check_audio_quality(arr, duration)
 
     from govori.state import PERMANENT_API_ERROR  # noqa: PLC0415
     from govori.transcribe import transcribe_with_fallback  # noqa: PLC0415
 
     note_model = getattr(cfg.CONFIG, "note_model", None)
-    text = transcribe_with_fallback(arr, duration, model_override=note_model)
+    text = transcribe_with_fallback(arr, duration, model_override=note_model,
+                                    pre_encoded=pre_encoded_buf)
     if text is PERMANENT_API_ERROR or text is None:
         logger.error("/note transcribe_failed")
         raise HTTPException(
@@ -584,14 +609,27 @@ async def dict_endpoint(request: Request, background_tasks: BackgroundTasks) -> 
     file_bytes, src = await _extract_audio_bytes(request)
     logger.debug("/dict received {} bytes source={}", len(file_bytes), src)
 
-    arr, duration = _decode_audio(file_bytes)
-    _check_audio_quality(arr, duration)
+    # Fast path: OGG/Opus received directly → skip decode+encode round-trip
+    pre_encoded_buf: BytesIO | None = None
+    if file_bytes[:4] == b"OggS":
+        duration = _ogg_duration_sec(file_bytes)
+        if duration >= 0.5:
+            pre_encoded_buf = BytesIO(file_bytes)
+            pre_encoded_buf.name = "audio.ogg"
+            arr = None
+            logger.debug("/dict ogg-fast-path dur={:.2f}s", duration)
+        else:
+            arr, duration = _decode_audio(file_bytes)
+            _check_audio_quality(arr, duration)
+    else:
+        arr, duration = _decode_audio(file_bytes)
+        _check_audio_quality(arr, duration)
 
     # Lazy imports so tests can mock them via sys.modules
     from govori.state import PERMANENT_API_ERROR  # noqa: PLC0415
     from govori.transcribe import transcribe_with_fallback  # noqa: PLC0415
 
-    text = transcribe_with_fallback(arr, duration)
+    text = transcribe_with_fallback(arr, duration, pre_encoded=pre_encoded_buf)
     if text is PERMANENT_API_ERROR or text is None:
         logger.error("/dict transcribe_failed")
         raise HTTPException(

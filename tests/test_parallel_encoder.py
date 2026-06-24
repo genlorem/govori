@@ -183,6 +183,56 @@ class TestParallelEncoder:
 
 # ── _try_transcribe: pre_encoded routing ────────────────────────────────────
 
+class TestTryTranscribePreEncodedNoAudio:
+    """audio=None + pre_encoded: server fast path — use pre_encoded for ALL attempts."""
+
+    def _make_provider_client(self):
+        from govori.transcribe import Provider
+        p = Provider(name="groq", api_key_env="GROQ_API_KEY",
+                     base_url="https://api.groq.com/openai/v1", model="whisper-large-v3-turbo")
+        return p, MagicMock()
+
+    def test_all_attempts_use_pre_encoded_when_audio_none(self):
+        from govori.transcribe import _try_transcribe
+
+        pre_buf = io.BytesIO(b"fake-ogg")
+        p, client = self._make_provider_client()
+        calls = []
+
+        def _pre_side(c, m, buf, timeout):
+            calls.append(len(calls) + 1)
+            return None  # always fail → forces max retries
+
+        with patch("govori.transcribe._transcribe_preencoded", side_effect=_pre_side), \
+             patch("govori.transcribe._encode_and_transcribe") as mock_enc:
+            result = _try_transcribe(p, client, None, 1.0, pre_encoded=pre_buf, max_retries=2)
+
+        assert len(calls) == 3  # 3 attempts, all via pre_encoded
+        mock_enc.assert_not_called()  # never fell back to raw encode
+        assert result is None
+
+    def test_pre_encoded_seeked_before_each_attempt(self):
+        """Each retry must seek to 0 so the stream is readable again."""
+        from govori.transcribe import _try_transcribe
+
+        real_buf = io.BytesIO(b"some-bytes")
+        seeks = []
+        original_seek = real_buf.seek
+
+        def _track_seek(pos):
+            seeks.append(pos)
+            return original_seek(pos)
+
+        real_buf.seek = _track_seek
+        p, client = self._make_provider_client()
+
+        with patch("govori.transcribe._transcribe_preencoded", return_value=None), \
+             patch("govori.transcribe._encode_and_transcribe"):
+            _try_transcribe(p, client, None, 1.0, pre_encoded=real_buf, max_retries=1)
+
+        assert seeks.count(0) >= 2  # seeked to 0 at least once per attempt
+
+
 class TestTryTranscribePreEncoded:
     """Verify that attempt 1 uses pre_encoded buffer; retries fall back to re-encode."""
 

@@ -296,10 +296,12 @@ def _try_transcribe(
 ):
     """One initial attempt + up to max_retries auto-retries against a single provider.
 
-    If `pre_encoded` is provided (a BytesIO from ParallelEncoder.flush()), the first
-    attempt skips re-encoding and calls _transcribe_preencoded directly. Retry attempts
-    always fall back to _encode_and_transcribe (raw audio re-encode) since the pre-encoded
-    buffer is a one-shot stream.
+    Two modes depending on what the caller has:
+    - audio + pre_encoded: use pre_encoded on attempt 1, re-encode raw audio on retries
+      (local daemon path: ParallelEncoder already encoded during recording)
+    - audio=None + pre_encoded: use pre_encoded on ALL attempts (seek to 0 each time)
+      (server fast path: received OGG/Opus directly, no raw PCM available)
+    - audio + no pre_encoded: encode raw audio every attempt (original path)
 
     Returns text | None (transient terminal failure) | PERMANENT_API_ERROR.
     """
@@ -311,11 +313,13 @@ def _try_transcribe(
     for attempt in range(1, total_attempts + 1):
         result = {"text": None, "done": False}
 
-        use_pre_encoded = pre_encoded is not None and attempt == 1
+        # Use pre_encoded when: it exists AND (no raw audio available OR first attempt)
+        use_pre_encoded = pre_encoded is not None and (audio is None or attempt == 1)
 
         def _do(use_pre=use_pre_encoded):
             try:
                 if use_pre:
+                    pre_encoded.seek(0)
                     result["text"] = _transcribe_preencoded(client, model, pre_encoded, timeout=timeout)
                 else:
                     result["text"] = _encode_and_transcribe(client, model, audio, timeout=timeout)
