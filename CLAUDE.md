@@ -1,4 +1,3 @@
-<!-- GSD:project-start source:PROJECT.md -->
 ## Project
 
 **Govori**
@@ -13,9 +12,7 @@ Voice dictation tool for macOS. Hold fn to record, release to transcribe and pas
 - **Privacy**: Voice audio goes to OpenAI cloud, notes to Anthropic — must disclose
 - **Dependencies**: Python 3.8+, requires .venv with sounddevice, pyobjc, av, openai, anthropic
 - **Architecture**: Single-file Python — works for now, but reaching maintainability ceiling (~1900 lines)
-<!-- GSD:project-end -->
 
-<!-- GSD:stack-start source:codebase/STACK.md -->
 ## Technology Stack
 
 ## Languages
@@ -61,9 +58,7 @@ Voice dictation tool for macOS. Hold fn to record, release to transcribe and pas
 - macOS only; runs as a foreground daemon process
 - No packaging/distribution mechanism detected (no setup.py, pyproject.toml, or installer)
 - Optional: Hammerspoon for the status HUD overlay (`extras/hud/status_hud.lua`)
-<!-- GSD:stack-end -->
 
-<!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
 ## Naming Patterns
@@ -106,9 +101,7 @@ Voice dictation tool for macOS. Hold fn to record, release to transcribe and pas
 - Predicates (`_is_hallucination`, `_is_first_run`) return `bool`
 - Pipelines return structured `dict` (e.g., `classify_note`, `_decide_merge`)
 ## Module Design
-<!-- GSD:conventions-end -->
 
-<!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
 ## Pattern Overview
@@ -198,34 +191,9 @@ Voice dictation tool for macOS. Hold fn to record, release to transcribe and pas
 - Hallucination filter: known Whisper hallucination phrases silently dropped (see `WHISPER_HALLUCINATIONS` set)
 - Clipboard restore: async thread restores original clipboard 150ms after paste
 ## Cross-Cutting Concerns
-<!-- GSD:architecture-end -->
 
-<!-- GSD:skills-start source:skills/ -->
 ## Project Skills
 
 | Skill | Description | Path |
 |-------|-------------|------|
 | debug-prod |  | `.claude/skills/debug-prod/SKILL.md` |
-<!-- GSD:skills-end -->
-
-<!-- GSD:workflow-start source:GSD defaults -->
-## GSD Workflow Enforcement
-
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
-
-Use these entry points:
-- `/gsd-quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd-debug` for investigation and bug fixing
-- `/gsd-execute-phase` for planned phase work
-
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
-
-
-
-<!-- GSD:profile-start -->
-## Developer Profile
-
-> Profile not yet configured. Run `/gsd-profile-user` to generate your developer profile.
-> This section is managed by `generate-claude-profile` -- do not edit manually.
-<!-- GSD:profile-end -->
