@@ -157,6 +157,125 @@ def test_note_saves_by_default(client):
 
 
 # ---------------------------------------------------------------------------
+# /note stage=classify/execute — session_ask (voice control of session-manager)
+# ---------------------------------------------------------------------------
+
+_DO_META = {
+    "contexts": ["default"], "type": "other", "urgency": "low",
+    "title": "команда", "tags": [], "related_stuck": [],
+    "intent": "do", "target": "session-manager",
+    "summary": "спроси у session-manager", "confidence": "high",
+}
+
+_SESSION_ASK_ACTION = {
+    "action": "session_ask",
+    "message": "когда будет готово",
+    "candidates": ["session-manager__spark", "session-manager__main"],
+}
+
+_OTHER_ACTION = {"action": "other", "message": None, "candidates": []}
+
+
+def _classify_do(client, action_info):
+    """POST /note?stage=classify with intent=do routed to `action_info`. Returns JSON."""
+    wav = make_wav_bytes()
+    with patch("govori.server._decode_audio", return_value=(FAKE_AUDIO, 1.0)), \
+         patch("govori.server._check_audio_quality", return_value=None), \
+         patch("govori.transcribe.transcribe_with_fallback",
+               return_value="спроси у session-manager когда будет готово"), \
+         patch("govori.correct.correct_transcript",
+               return_value=("спроси у session-manager когда будет готово", [])), \
+         patch("govori.notes._is_hallucination", return_value=False), \
+         patch("govori.intents.classify_intent", return_value=dict(_DO_META)), \
+         patch("govori.intents.classify_do_action", return_value=dict(action_info)):
+        r = client.post(
+            "/note?stage=classify",
+            content=wav,
+            headers={**AUTH, "Content-Type": "application/octet-stream"},
+        )
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_note_classify_session_ask_forces_confirm_menu(client):
+    """action=session_ask must force confirm=1 even though confidence=high (Q3)."""
+    data = _classify_do(client, _SESSION_ASK_ACTION)
+    assert data["action"] == "session_ask"
+    assert data["confirm"] == 1
+    assert data["session_candidates"] == _SESSION_ASK_ACTION["candidates"]
+    assert "когда будет готово" in data["line"]
+
+
+def test_note_classify_non_session_do_keeps_confidence_gate(client):
+    """Regular do-commands (action=other) keep the existing confidence-gated menu."""
+    data = _classify_do(client, _OTHER_ACTION)
+    assert data["action"] == "other"
+    assert data["confirm"] == 0  # confidence=high in _DO_META -> no forced menu
+    assert data["session_candidates"] == []
+
+
+def test_note_execute_session_ask_sends_to_chosen_session(client):
+    data = _classify_do(client, _SESSION_ASK_ACTION)
+    token = data["token"]
+
+    with patch("govori.intents.session_ask_execute",
+               return_value="✓ отправлено в session-manager__spark") as mock_send, \
+         patch("govori.intents.log_intent_decision") as mock_log:
+        r = client.post(
+            f"/note?stage=execute&token={token}&intent=do&session=session-manager__spark",
+            headers=AUTH,
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["answer"] == "✓ отправлено в session-manager__spark"
+    assert body["action"] == "session_ask"
+    mock_send.assert_called_once_with("session-manager__spark", "когда будет готово")
+    logged = mock_log.call_args[0][0]
+    assert logged["chosen_target"] == "session-manager__spark"
+    assert logged["predicted_target"] == "session-manager__spark"  # top candidate
+
+
+def test_note_execute_session_ask_empty_session_cancels(client):
+    data = _classify_do(client, _SESSION_ASK_ACTION)
+    token = data["token"]
+
+    with patch("govori.intents.session_ask_execute") as mock_send, \
+         patch("govori.intents.log_intent_decision") as mock_log:
+        r = client.post(f"/note?stage=execute&token={token}&intent=do&session=", headers=AUTH)
+    assert r.status_code == 200
+    assert r.json()["answer"] == "❌ отменено"
+    mock_send.assert_not_called()
+    logged = mock_log.call_args[0][0]
+    assert logged["chosen_target"] is None
+
+
+def test_note_execute_session_ask_explicit_cancel_label(client):
+    data = _classify_do(client, _SESSION_ASK_ACTION)
+    token = data["token"]
+
+    with patch("govori.intents.session_ask_execute") as mock_send, \
+         patch("govori.intents.log_intent_decision"):
+        r = client.post(f"/note?stage=execute&token={token}&intent=do&session=Отмена", headers=AUTH)
+    assert r.json()["answer"] == "❌ отменено"
+    mock_send.assert_not_called()
+
+
+def test_note_execute_do_falls_back_to_dispatch_when_not_session_ask(client):
+    """action=other (not session-related) keeps the existing dispatch_command stub."""
+    data = _classify_do(client, _OTHER_ACTION)
+    token = data["token"]
+
+    with patch("govori.intents.dispatch_command", return_value="Команда сохранена.") as mock_dispatch, \
+         patch("govori.intents.session_ask_execute") as mock_send, \
+         patch("govori.intents.log_intent_decision"):
+        r = client.post(f"/note?stage=execute&token={token}&intent=do", headers=AUTH)
+    assert r.status_code == 200
+    assert r.json()["answer"] == "Команда сохранена."
+    mock_dispatch.assert_called_once()
+    mock_send.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # /review/* endpoints
 # ---------------------------------------------------------------------------
 

@@ -705,6 +705,17 @@ async def note_endpoint(request: Request) -> JSONResponse:
         from govori import intents  # noqa: PLC0415
 
         meta = intents.classify_intent(text)
+        action = None
+        session_message = None
+        session_candidates: list[str] = []
+        if meta.get("intent") == "do":
+            action_info = intents.classify_do_action(text)
+            action = action_info.get("action")
+            session_message = action_info.get("message")
+            session_candidates = action_info.get("candidates") or []
+        meta["action"] = action
+        meta["session_message"] = session_message
+        meta["session_candidates"] = session_candidates
         token = _store_intent_cache(text, duration, meta)
         _store_last_classification(
             request.headers.get("x-govori-token") or request.query_params.get("token"),
@@ -712,18 +723,25 @@ async def note_endpoint(request: Request) -> JSONResponse:
         )
         intent = meta.get("intent", "note")
         summary = meta.get("summary") or meta.get("title") or "note"
-        line = _intent_line(intent, summary)
         latency = (time.monotonic() - t0) * 1000
         logger.info(
-            "/note stage=classify size={}B dur={:.2f}s latency={:.0f}ms -> intent={} target={}",
+            "/note stage=classify size={}B dur={:.2f}s latency={:.0f}ms -> intent={} target={} action={}",
             size,
             duration,
             latency,
             intent,
             meta.get("target"),
+            action,
         )
         confidence = meta.get("confidence", "high")
         confirm = 0 if confidence == "high" else 1
+        if action == "session_ask":
+            # Side-effect action — menu is mandatory regardless of confidence,
+            # and doubles as target picker (candidates list) + confirmation.
+            confirm = 1
+            line = f"Отправить «{session_message}»?" if session_message else "Отправить в сессию?"
+        else:
+            line = _intent_line(intent, summary)
         if wants_text_stage:
             # ?field=confirm → plain "1"/"0" for the shortcut's If gate (no JSON
             # parsing on the phone). Otherwise the human-readable category line.
@@ -745,6 +763,8 @@ async def note_endpoint(request: Request) -> JSONResponse:
                 "confidence": confidence,
                 "confirm": confirm,
                 "line": line,
+                "action": action,
+                "session_candidates": session_candidates,
             }
         )
 
@@ -765,6 +785,8 @@ async def note_endpoint(request: Request) -> JSONResponse:
 
         from govori import intents  # noqa: PLC0415
 
+        predicted_intent = cached_meta.get("intent")
+
         if intent == "note":
             from govori.notes import save_or_merge_note  # noqa: PLC0415
 
@@ -784,17 +806,48 @@ async def note_endpoint(request: Request) -> JSONResponse:
             result_meta = result.get("meta") or {}
             title = result_meta.get("title") or cached_meta.get("title") or "note"
             line = f"✓ сохранено: {title}"
+            intents.log_intent_decision({
+                "raw_text": text[:300], "predicted_intent": predicted_intent,
+                "predicted_confidence": cached_meta.get("confidence"), "chosen_intent": "note",
+            })
             if wants_text_stage:
                 return PlainTextResponse(line)
             return JSONResponse({"ok": True, "stage": "execute", "intent": "note", "line": line})
 
         if intent == "ask":
             answer = intents.brain_answer(text)
+            intents.log_intent_decision({
+                "raw_text": text[:300], "predicted_intent": predicted_intent,
+                "predicted_confidence": cached_meta.get("confidence"), "chosen_intent": "ask",
+            })
             if wants_text_stage:
                 return PlainTextResponse(answer)
             return JSONResponse({"ok": True, "stage": "execute", "intent": "ask", "answer": answer})
 
+        # intent == "do"
+        action = cached_meta.get("action")
+        if action == "session_ask":
+            candidates = cached_meta.get("session_candidates") or []
+            message = cached_meta.get("session_message") or text
+            session_choice = (request.query_params.get("session") or "").strip()
+            cancelled = not session_choice or session_choice.lower() in ("отмена", "cancel", "❌ отмена", "❌")
+            intents.log_intent_decision({
+                "raw_text": text[:300], "predicted_intent": "do", "predicted_action": action,
+                "predicted_target": candidates[0] if candidates else None,
+                "predicted_confidence": cached_meta.get("confidence"),
+                "chosen_intent": "do", "chosen_action": action,
+                "chosen_target": None if cancelled else session_choice,
+            })
+            answer = "❌ отменено" if cancelled else intents.session_ask_execute(session_choice, message)
+            if wants_text_stage:
+                return PlainTextResponse(answer)
+            return JSONResponse({"ok": True, "stage": "execute", "intent": "do", "action": action, "answer": answer})
+
         answer = intents.dispatch_command(text, cached_meta.get("target"))
+        intents.log_intent_decision({
+            "raw_text": text[:300], "predicted_intent": "do", "predicted_action": action,
+            "predicted_confidence": cached_meta.get("confidence"), "chosen_intent": "do", "chosen_action": action,
+        })
         if wants_text_stage:
             return PlainTextResponse(answer)
         return JSONResponse({"ok": True, "stage": "execute", "intent": "do", "answer": answer})

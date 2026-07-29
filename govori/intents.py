@@ -1,15 +1,19 @@
 """Intent routing helpers for note-mode relay."""
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
 import subprocess
+import threading
+from pathlib import Path
 
 from loguru import logger
 
 from . import config as cfg
 from . import notes
+from . import session_control
 
 
 _BRAIN_CMD = [
@@ -17,6 +21,8 @@ _BRAIN_CMD = [
     '/home/gen/brain/engine/query.py',
 ]
 _INTENTS = {'note', 'ask', 'do'}
+_DECISION_LOG = Path.home() / 'govori-notes' / 'index' / 'intent-decisions.jsonl'
+_decision_log_lock = threading.Lock()
 
 
 def _default_meta(base: dict) -> dict:
@@ -202,3 +208,86 @@ def dispatch_command(text: str, target: str | None) -> str:
         f"Команда распознана (проект: {project}) и сохранена. "
         "Делегацию агенту проекта добавлю в следующей версии."
     )
+
+
+def classify_do_action(text: str) -> dict:
+    """Route a do-intent transcript to a direct executor (Phase 2.1).
+
+    Currently only `session_ask` is implemented: send a message into one of
+    the user's live Claude Code sessions via session-manager. Everything
+    else falls through to `dispatch_command`'s note-and-stash stub.
+
+    Returns {"action": "session_ask"|"other", "message": str|None,
+    "candidates": [session_id, ...]}. `candidates` is ranked, best match
+    first; empty if nothing plausible matched or no sessions are live.
+    """
+    default = {'action': 'other', 'message': None, 'candidates': []}
+    sessions = session_control.list_sessions()
+    if not sessions:
+        return default
+    session_ids = [s.get('id') for s in sessions if s.get('id')]
+    if not session_ids:
+        return default
+    try:
+        if not cfg.NOTES_CFG:
+            return default
+        client = notes._get_anthropic_client()
+        if client is None:
+            return default
+        system = f"""Ты роутер действий для голосовой команды пользователя (тип "do" уже определён на предыдущем шаге).
+
+Проверь: не просит ли пользователь отправить сообщение в одну из его АКТИВНЫХ Claude Code сессий (управляются через session-manager) — например "спроси у X: ...", "скажи сессии Y ...", "передай в X ...", "напиши в сессию про Z ...".
+
+Если да — верни:
+{{"action": "session_ask", "message": "<полезная нагрузка без маршрутизирующей фразы, НОРМАЛИЗОВАННАЯ: исправь очевидные огрехи распознавания речи, сохрани смысл, не выдумывай нового>", "candidates": ["<id сессии из списка ниже>", ...до 3, по релевантности упоминанию, пусто если ни одна не подходит]}}
+
+Если это НЕ про голосовое управление сессиями — верни {{"action": "other", "message": null, "candidates": []}}.
+
+Живые сессии:
+{chr(10).join(session_ids)}
+
+Верни только валидный JSON, без markdown и пояснений."""
+        resp = client.messages.create(
+            model=cfg.NOTES_CFG['classifier_model'],
+            max_tokens=250,
+            temperature=0,
+            system=system,
+            messages=[{'role': 'user', 'content': text}],
+        )
+        data = json.loads(_strip_json(resp.content[0].text))
+        if not isinstance(data, dict):
+            return default
+        action = data.get('action') if data.get('action') in ('session_ask', 'other') else 'other'
+        message = data.get('message') if isinstance(data.get('message'), str) else None
+        candidates = [c for c in (data.get('candidates') or []) if c in session_ids]
+        if action != 'session_ask':
+            return default
+        return {'action': action, 'message': message, 'candidates': candidates[:3]}
+    except Exception as exc:
+        logger.info(f'do-action classify error: {exc}')
+        return default
+
+
+def session_ask_execute(session_id: str, message: str) -> str:
+    """Inject `message` into `session_id`'s pane via session-manager. Fire-and-forget."""
+    tagged = f'[голос/Говори, возможна неточность распознавания] {message}'
+    result = session_control.ask_session(session_id, tagged)
+    if not result.get('ok', True) and 'error' in result:
+        return f'Не смог достучаться до сессии {session_id}: {result["error"]}'
+    return f'✓ отправлено в {session_id}'
+
+
+def log_intent_decision(entry: dict) -> None:
+    """Append a predicted-vs-chosen record for later accuracy analysis.
+
+    One line per menu-mediated decision (note/ask/do type choice, or the
+    session_ask target/cancel choice) — best-effort, never raises.
+    """
+    try:
+        record = dict(entry)
+        record.setdefault('ts', datetime.datetime.now().astimezone().isoformat(timespec='seconds'))
+        _DECISION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _decision_log_lock, _DECISION_LOG.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as exc:
+        logger.info(f'intent decision log failed (non-fatal): {exc}')
