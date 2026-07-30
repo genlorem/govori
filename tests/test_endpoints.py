@@ -203,6 +203,7 @@ def test_note_classify_session_ask_forces_confirm_menu(client):
     assert data["action"] == "session_ask"
     assert data["confirm"] == 1
     assert data["session_candidates"] == _SESSION_ASK_ACTION["candidates"]
+    assert data["session_message"] == _SESSION_ASK_ACTION["message"]  # phone needs this field to render the menu prompt
     assert "когда будет готово" in data["line"]
 
 

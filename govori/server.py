@@ -764,6 +764,7 @@ async def note_endpoint(request: Request) -> JSONResponse:
                 "confirm": confirm,
                 "line": line,
                 "action": action,
+                "session_message": session_message,
                 "session_candidates": session_candidates,
             }
         )
