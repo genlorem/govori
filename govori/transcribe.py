@@ -44,6 +44,29 @@ WHISPER_HALLUCINATIONS = {
     'bye', '.', '..', '...', '', 'ご視聴ありがとうございました',
 }
 
+# Same artefacts as above, but glued to the end of otherwise real speech
+# ("Купи молоко. Продолжение следует...") — the whole-text filter misses those,
+# so the tail is trimmed instead of dropping the utterance.
+_TRAILING_HALLUCINATION_RE = re.compile(
+    r"(?:\s*\bпродолжение\s+следует\b[\s.!?…]*)+$",
+    re.IGNORECASE,
+)
+_DANGLING_PUNCT_RE = re.compile(r"[\s,;:\-–—]+$")
+
+
+def strip_trailing_hallucination(text):
+    """Cut a trailing 'продолжение следует' tail off an otherwise valid transcription.
+
+    Returns text unchanged when no tail is present. A text consisting solely of
+    the phrase collapses to '' — callers already treat that as an empty result.
+    """
+    if not text:
+        return text
+    trimmed = _TRAILING_HALLUCINATION_RE.sub("", text)
+    if trimmed == text:
+        return text
+    return _DANGLING_PUNCT_RE.sub("", trimmed).strip()
+
 
 @dataclass(frozen=True)
 class Provider:
@@ -231,7 +254,7 @@ def _call_transcription_api(client: OpenAI, model: str, buf: io.BytesIO, timeout
             result = client.with_options(timeout=timeout, max_retries=0).audio.transcriptions.create(
                 model=model, file=buf, language=cfg.LANGUAGE, temperature=0, prompt=cfg.WHISPER_PROMPT,
             )
-        return result.text.strip()
+        return strip_trailing_hallucination(result.text.strip())
     except openai.APITimeoutError:
         logger.info(f"! Transcription timed out ({timeout}s)")
         return None
