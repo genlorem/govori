@@ -367,11 +367,61 @@ def _try_transcribe(
     return None
 
 
+# Длинная запись одним вызовом Whisper теряет целые куски: 257 с живой речи
+# дали 951 символ вместо ~3500, синтетический замер 254 с — 2241 из 3694.
+# Нарезка по паузам на куски ≤ CHUNK_MAX_SEC вернула весь текст (3772 из 3694).
+CHUNK_OVER_SEC = 60.0
+CHUNK_MIN_SEC = 20.0
+CHUNK_MAX_SEC = 30.0
+CHUNK_WORKERS = 4
+
+
+def split_on_pauses(audio, sr: int) -> list:
+    """Cut mono audio into pieces of CHUNK_MIN_SEC..CHUNK_MAX_SEC, each cut at the
+    quietest 50 ms frame of that window so words are not sliced in half."""
+    frame = int(sr * 0.05)
+    n_frames = len(audio) // frame
+    if n_frames == 0:
+        return [audio]
+    rms = np.sqrt(np.mean(audio[: n_frames * frame].reshape(n_frames, frame) ** 2, axis=1))
+    lo_f, hi_f = int(CHUNK_MIN_SEC / 0.05), int(CHUNK_MAX_SEC / 0.05)
+    chunks, start_f = [], 0
+    while n_frames - start_f > hi_f:
+        window = rms[start_f + lo_f: start_f + hi_f]
+        cut_f = start_f + lo_f + int(np.argmin(window))
+        chunks.append(audio[start_f * frame: cut_f * frame])
+        start_f = cut_f
+    chunks.append(audio[start_f * frame:])
+    return chunks
+
+
+def _transcribe_chunked(audio, duration_sec, model_override: Optional[str]):
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    pieces = split_on_pauses(audio, cfg.SAMPLE_RATE)
+    logger.info(f"Long audio {duration_sec:.1f}s → {len(pieces)} chunks")
+
+    def _one(piece):
+        return transcribe_with_fallback(piece, len(piece) / cfg.SAMPLE_RATE, model_override=model_override)
+
+    with ThreadPoolExecutor(max_workers=CHUNK_WORKERS) as pool:
+        results = list(pool.map(_one, pieces))
+    if any(r is PERMANENT_API_ERROR for r in results):
+        return PERMANENT_API_ERROR
+    if any(r is None for r in results):
+        return None
+    # Тихий кусок Whisper «заполняет» фразой-галлюцинацией — такой кусок выкинуть.
+    return " ".join(r for r in results if r and not _is_hallucination(r)).strip()
+
+
 def transcribe_with_fallback(audio, duration_sec, *, on_progress: Optional[Callable] = None,
                               model_override: Optional[str] = None,
                               pre_encoded: Optional[io.BytesIO] = None):
     """Primary (Groq) with full retry budget. On transient terminal failure,
     try OpenAI once if OPENAI_API_KEY is set.
+
+    Audio longer than CHUNK_OVER_SEC (with raw samples available) is split on
+    pauses and each piece goes through this same function.
 
     `model_override` substitutes the primary provider's model only (e.g. notes
     use full `whisper-large-v3` instead of turbo). Fallback keeps its own model.
@@ -381,6 +431,8 @@ def transcribe_with_fallback(audio, duration_sec, *, on_progress: Optional[Calla
 
     Returns: text | None | PERMANENT_API_ERROR.
     """
+    if audio is not None and duration_sec > CHUNK_OVER_SEC:
+        return _transcribe_chunked(audio, duration_sec, model_override)
     primary = _get_provider("groq")
     primary_client = _get_client(primary)
     if primary_client is None:

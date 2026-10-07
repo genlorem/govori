@@ -279,6 +279,11 @@ def _normalize_intent(raw: str | None, cached_meta: dict) -> str | None:
     return None
 
 
+# Длиннее — декодируем в PCM: нарезку по паузам (transcribe.CHUNK_OVER_SEC)
+# делает transcribe_with_fallback только по сырым сэмплам.
+_FAST_PATH_MAX_SEC = 60.0
+
+
 async def _transcribe_correct_note_request(request: Request) -> tuple[str, float, int]:
     file_bytes, src = await _extract_audio_bytes(request)
     logger.debug("/note received {} bytes source={}", len(file_bytes), src)
@@ -286,7 +291,7 @@ async def _transcribe_correct_note_request(request: Request) -> tuple[str, float
     pre_encoded_buf: BytesIO | None = None
     if _is_preencoded(file_bytes):
         duration = _container_duration_sec(file_bytes)
-        if duration >= 0.5:
+        if 0.5 <= duration <= _FAST_PATH_MAX_SEC:
             pre_encoded_buf = BytesIO(file_bytes)
             pre_encoded_buf.name = _preencoded_filename(file_bytes)
             arr = None
@@ -625,7 +630,7 @@ async def dict_endpoint(request: Request, background_tasks: BackgroundTasks) -> 
     pre_encoded_buf: BytesIO | None = None
     if _is_preencoded(file_bytes):
         duration = _container_duration_sec(file_bytes)
-        if duration >= 0.5:
+        if 0.5 <= duration <= _FAST_PATH_MAX_SEC:
             pre_encoded_buf = BytesIO(file_bytes)
             pre_encoded_buf.name = _preencoded_filename(file_bytes)
             arr = None
