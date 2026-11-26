@@ -124,3 +124,74 @@ def test_device_mismatch_returns_403(tmp_config, monkeypatch):
     # /health is open but let's test a guarded path
     r2 = c.post("/dict", headers={"X-Govori-Token": ts, "X-Device-Id": "dev2"}, content=b"x")
     assert r2.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Owner-only intents: customer tokens may only dictate / take notes
+# ---------------------------------------------------------------------------
+
+
+def _classified_do(monkeypatch, headers):
+    """Run /note?stage=classify on an utterance the router reads as a command."""
+    import govori.intents as intents
+    import govori.server as server
+
+    async def _fake_transcribe(request):
+        return "спроси у сессии статус", 2.0, 10
+
+    monkeypatch.setattr(server, "_transcribe_correct_note_request", _fake_transcribe)
+    monkeypatch.setattr(intents, "classify_intent", lambda text: {"intent": "do", "summary": "s"})
+    spies = {
+        "classify_do_action": MagicMock(return_value={
+            "action": "session_ask", "message": "статус", "candidates": ["owner__session"]}),
+        "brain_answer": MagicMock(return_value="секрет владельца"),
+        "session_ask_execute": MagicMock(return_value="ok"),
+        "dispatch_command": MagicMock(return_value="ok"),
+        "log_intent_decision": MagicMock(),
+    }
+    for name, spy in spies.items():
+        monkeypatch.setattr(intents, name, spy)
+    return spies
+
+
+def _customer_headers():
+    import govori.tokens as tok
+    return {"X-Govori-Token": tok.issue("cust", "label"), "X-Device-Id": "dev1"}
+
+
+def test_customer_classify_does_not_expose_owner_sessions(tmp_config, monkeypatch):
+    c = _make_client(monkeypatch, tmp_config)
+    h = _customer_headers()
+    spies = _classified_do(monkeypatch, h)
+    r = c.post("/note?stage=classify", headers=h)
+    assert r.status_code == 200
+    assert r.json()["intent"] == "note"
+    assert r.json()["session_candidates"] == []
+    spies["classify_do_action"].assert_not_called()
+
+
+@pytest.mark.parametrize("intent", ["ask", "do"])
+@pytest.mark.parametrize("send_header", [True, False])
+def test_customer_cannot_execute_owner_intents(tmp_config, monkeypatch, intent, send_header):
+    c = _make_client(monkeypatch, tmp_config)
+    h = _customer_headers()
+    spies = _classified_do(monkeypatch, h)
+    token = c.post("/note?stage=classify", headers=h).json()["token"]
+    url = f"/note?stage=execute&intent={intent}&session=owner__session&token={token}"
+    r = c.post(url, headers=h if send_header else {})
+    assert r.status_code == 403
+    assert r.json()["reason"] == "owner_only"
+    for name in ("brain_answer", "session_ask_execute", "dispatch_command"):
+        spies[name].assert_not_called()
+
+
+@pytest.mark.parametrize("token_env", [MASTER, None])
+def test_owner_executes_session_ask_with_cache_token_only(tmp_config, monkeypatch, token_env):
+    """Owner (master token, or dev mode) keeps the header-less execute flow."""
+    c = _make_client(monkeypatch, tmp_config, token_env=token_env)
+    h = {"X-Govori-Token": MASTER}
+    spies = _classified_do(monkeypatch, h)
+    token = c.post("/note?stage=classify", headers=h).json()["token"]
+    r = c.post(f"/note?stage=execute&intent=do&session=owner__session&token={token}")
+    assert r.status_code == 200
+    spies["session_ask_execute"].assert_called_once_with("owner__session", "статус")
