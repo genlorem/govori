@@ -183,7 +183,7 @@ def _evict_intent_cache_locked(now: float) -> None:
         _intent_cache.pop(token, None)
 
 
-def _store_intent_cache(text: str, duration: float, meta: dict) -> str:
+def _store_intent_cache(text: str, duration: float, meta: dict, *, owner: bool) -> str:
     token = uuid.uuid4().hex
     now = time.monotonic()
     with _intent_cache_lock:
@@ -193,6 +193,7 @@ def _store_intent_cache(text: str, duration: float, meta: dict) -> str:
             "text": text,
             "duration": duration,
             "meta": meta,
+            "owner": owner,
         }
     return token
 
@@ -212,7 +213,9 @@ def _get_intent_cache(token: str | None) -> dict | None:
         return dict(item)
 
 
-def _store_last_classification(auth_token: str | None, text: str, duration: float, meta: dict) -> None:
+def _store_last_classification(
+    auth_token: str | None, text: str, duration: float, meta: dict, *, owner: bool
+) -> None:
     """Remember this device's most recent classify, keyed by its static auth token.
 
     Lets the execute call omit a per-request token: the shortcut sends only its
@@ -227,6 +230,7 @@ def _store_last_classification(auth_token: str | None, text: str, duration: floa
             "text": text,
             "duration": duration,
             "meta": meta,
+            "owner": owner,
         }
 
 
@@ -242,6 +246,11 @@ def _get_last_classification(auth_token: str | None) -> dict | None:
             _last_classification.pop(auth_token, None)
             return None
         return dict(item)
+
+
+def _is_owner(request: Request) -> bool:
+    """Master token, or dev mode (no auth configured) where everyone is the owner."""
+    return getattr(request.state, "is_master", False) or not os.environ.get("GOVORI_TOKEN")
 
 
 _INTENT_LINE_RU = {
@@ -710,6 +719,11 @@ async def note_endpoint(request: Request) -> JSONResponse:
         from govori import intents  # noqa: PLC0415
 
         meta = intents.classify_intent(text)
+        # "ask" reads the owner's Brain and "do" drives the owner's sessions:
+        # customers only take notes, and never see the session list.
+        owner = _is_owner(request)
+        if not owner:
+            meta["intent"] = "note"
         action = None
         session_message = None
         session_candidates: list[str] = []
@@ -721,10 +735,10 @@ async def note_endpoint(request: Request) -> JSONResponse:
         meta["action"] = action
         meta["session_message"] = session_message
         meta["session_candidates"] = session_candidates
-        token = _store_intent_cache(text, duration, meta)
+        token = _store_intent_cache(text, duration, meta, owner=owner)
         _store_last_classification(
             request.headers.get("x-govori-token") or request.query_params.get("token"),
-            text, duration, meta,
+            text, duration, meta, owner=owner,
         )
         intent = meta.get("intent", "note")
         summary = meta.get("summary") or meta.get("title") or "note"
@@ -790,6 +804,11 @@ async def note_endpoint(request: Request) -> JSONResponse:
             return JSONResponse({"ok": False, "reason": "bad_intent"}, status_code=400)
 
         from govori import intents  # noqa: PLC0415
+
+        # Checked against whoever classified: execute may arrive with only the
+        # cache token and no auth header, so the request alone proves nothing.
+        if intent != "note" and not cached.get("owner"):
+            return JSONResponse({"ok": False, "reason": "owner_only"}, status_code=403)
 
         predicted_intent = cached_meta.get("intent")
 
