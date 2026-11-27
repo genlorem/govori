@@ -1,9 +1,16 @@
 """Anthropic client: OAuth subscription token preferred over pay-as-you-go key."""
+import importlib.util
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from govori import notes
+# test_server.py swaps sys.modules["govori.notes"] for a mock at import time;
+# load the real module from its file so the order of test files does not matter.
+_spec = importlib.util.spec_from_file_location(
+    "govori._notes_under_test", Path(__file__).parent.parent / "govori" / "notes.py")
+notes = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(notes)
 
 
 @pytest.fixture(autouse=True)
