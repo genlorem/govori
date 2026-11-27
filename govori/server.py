@@ -165,6 +165,10 @@ def _check_audio_quality(audio: np.ndarray, duration_sec: float) -> None:
             },
         )
     rms = float(np.sqrt(np.mean(audio**2)))
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    # Level of every request: Whisper turns near-silent iPhone recordings into
+    # "Субтитры сделал DimaTorzok"; this line tells silence from a decode bug.
+    logger.info(f"audio level dur={duration_sec:.2f}s rms={rms:.5f} peak={peak:.4f}")
     if rms < 0.0001:
         raise HTTPException(
             status_code=400,
