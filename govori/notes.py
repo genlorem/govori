@@ -32,17 +32,55 @@ from .transcribe import _is_hallucination, transcribe_with_fallback
 VALID_TYPES = {'idea', 'commitment', 'observation', 'todo', 'decision', 'question', 'other'}
 VALID_URGENCY = {'low', 'medium', 'high'}
 _anthropic_client = None
+OAUTH_BETA_HEADER = 'oauth-2025-04-20'
+CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+
+
+class _OAuthMessages:
+    """messages.create that prepends the identity block the OAuth path requires."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def create(self, **kwargs):
+        system = kwargs.get('system')
+        blocks = [{'type': 'text', 'text': CLAUDE_CODE_IDENTITY}]
+        if isinstance(system, str) and system:
+            blocks.append({'type': 'text', 'text': system})
+        elif isinstance(system, list):
+            blocks.extend(system)
+        kwargs['system'] = blocks
+        return self._inner.create(**kwargs)
+
+
+class _OAuthClient:
+    def __init__(self, inner):
+        self._inner = inner
+        self.messages = _OAuthMessages(inner.messages)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
 
 def _get_anthropic_client():
+    """OAuth subscription token (ANTHROPIC_OAUTH_TOKEN) first, then the
+    pay-as-you-go key: the key ran out of credit on 2026-09-12 and notes and
+    voice commands silently failed with 400 for 2.5 months."""
     global _anthropic_client
     if _anthropic_client is not None:
         return _anthropic_client
     if Anthropic is None:
         logger.error('anthropic package not installed - run: pip install anthropic')
         return None
+    oauth = os.environ.get('ANTHROPIC_OAUTH_TOKEN')
+    if oauth:
+        inner = Anthropic(api_key=None, auth_token=oauth,
+                          default_headers={'anthropic-beta': OAUTH_BETA_HEADER})
+        _anthropic_client = _OAuthClient(inner)
+        return _anthropic_client
     key = os.environ.get('ANTHROPIC_API_KEY')
     if not key:
-        logger.error('ANTHROPIC_API_KEY not set - check ~/.config/govori/env')
+        logger.error('ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY not set - check ~/.config/govori/env')
         return None
     _anthropic_client = Anthropic(api_key=key)
     return _anthropic_client
